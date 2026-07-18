@@ -87,6 +87,25 @@ The governed profile refuses plaintext HTTP before sending any request. Wire
 and anonymous profiles may still target HTTP development servers because they
 never transmit a credential or perform an authorized mutation.
 
+## Verify a published signed run (outsider)
+
+The live `/conformance` page and `GET /v1/conformance/runs/latest` expose the
+current signed anonymous and governed reports plus digests. Outsiders can
+re-check the published JWKS without repository access:
+
+```bash
+curl -sS https://api.sproutpad.ai/v1/conformance/runs/latest \
+  | jq '{state: .data.state, anonymous: .data.anonymous.state, governed: .data.governed.state, digest: .data.headDigest}'
+curl -sS https://api.sproutpad.ai/.well-known/conformance-jwks.json | jq '.keys[].kid'
+```
+
+Full offline cryptographic verification of a downloaded `{report,digest,signature}`
+bundle (JCS digest + `sproutpad-conformance-run+jws`) is available in the
+SproutPad control-plane tree as `pnpm conformance:verify <bundle.json>` and will
+be extracted into this package in a follow-up once the portable verifier is
+decoupled from private packages. Until then, the browser `/conformance` page
+re-verifies the same JWS against the published JWKS.
+
 ## What it checks
 
 - success and error responses validate against the bundled Draft 2020-12
