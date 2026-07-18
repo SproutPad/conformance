@@ -102,4 +102,4 @@ jobs:
       - name: Publish verified artifact with npm trusted publishing
         env:
           ARCHIVE: ${{ steps.package.outputs.archive }}
-        run: npm publish "$ARCHIVE" --access public --provenance --ignore-scripts
+        run: npm publish "./$ARCHIVE" --access public --provenance --ignore-scripts
