@@ -98,8 +98,11 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-          registry-url: https://registry.npmjs.org
+          # Do not set registry-url here: setup-node would write a placeholder
+          # NODE_AUTH_TOKEN that makes npm skip OIDC trusted publishing and
+          # fail the PUT with a misleading 404.
       - name: Publish verified artifact with npm trusted publishing
         env:
           ARCHIVE: ${{ steps.package.outputs.archive }}
+          NODE_AUTH_TOKEN: ""
         run: npm publish "./$ARCHIVE" --access public --provenance --ignore-scripts
