@@ -1,0 +1,105 @@
+name: publish npm package
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type PUBLISH @sproutpad/conformance
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Require explicit publication confirmation
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: test "$CONFIRMATION" = "PUBLISH @sproutpad/conformance"
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Install without dependency lifecycle scripts
+        run: npm ci --ignore-scripts
+      - name: Test release candidate
+        run: npm test
+      - name: Require tests to leave the candidate unchanged
+        run: test -z "$(git status --porcelain)"
+      - name: Pack and checksum the exact release candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir release
+          npm pack --ignore-scripts --pack-destination release
+          mapfile -t archives < <(
+            find release -mindepth 1 -maxdepth 1 -type f \
+              -name '*.tgz' -printf '%f\n'
+          )
+          test "${#archives[@]}" -eq 1
+          (
+            cd release
+            sha256sum "${archives[0]}" > package.sha256
+            sha256sum --check --strict package.sha256
+          )
+      - name: Upload checksummed npm package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-package-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            release/*.tgz
+            release/package.sha256
+
+  publish:
+    needs: package
+    environment: npm
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Download exact tested package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-package-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release
+      - id: package
+        name: Verify artifact allowlist and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(
+            find release -mindepth 1 -maxdepth 1 ! -type f -print -quit
+          )"
+          mapfile -t files < <(
+            find release -mindepth 1 -maxdepth 1 -type f -printf '%f\n' \
+              | LC_ALL=C sort
+          )
+          mapfile -t archives < <(printf '%s\n' "${files[@]}" | grep '\.tgz$')
+          test "${#files[@]}" -eq 2
+          test "${#archives[@]}" -eq 1
+          test -f release/package.sha256
+          (
+            cd release
+            test "$(wc -l < package.sha256)" -eq 1
+            test "$(awk '{print $2}' package.sha256)" = "${archives[0]}"
+            sha256sum --check --strict package.sha256
+          )
+          printf 'archive=%s\n' "release/${archives[0]}" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+          registry-url: https://registry.npmjs.org
+      - name: Publish verified artifact with npm trusted publishing
+        env:
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+        run: npm publish "$ARCHIVE" --access public --provenance --ignore-scripts

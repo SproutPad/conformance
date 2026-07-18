@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sproutpad.ai/spec/envelope.schema.json",
+  "title": "Governed Agent Spend — response envelope",
+  "description": "Machine-checkable definition of the normative wire format in spec §3 (https://sproutpad.ai/spec.md). A response body is conformant iff it validates against exactly one of the two branches: a success envelope or an error envelope. Field names are normative — no renaming, no restyling.",
+  "oneOf": [
+    { "$ref": "#/$defs/successEnvelope" },
+    { "$ref": "#/$defs/errorEnvelope" }
+  ],
+  "$defs": {
+    "successEnvelope": {
+      "type": "object",
+      "description": "Success. Read-only responses carry any shape under `data`; responses whose operation contract promises a continuation must additionally satisfy #/$defs/actionableSuccessEnvelope, and successful public MUTATION operations must satisfy #/$defs/mutatingSuccessEnvelope (§3.1). Whether an operation is mutating is not inferable from the body alone, so graders apply the operation-specific definition to responses of known operations.",
+      "required": ["data"],
+      "properties": {
+        "data": { "type": "object" },
+        "nextActions": { "$ref": "#/$defs/nextActions" },
+        "replayed": {
+          "type": "boolean",
+          "description": "Transport metadata. True only when an Idempotency-Key replay returned the stored response without re-executing the mutation."
+        }
+      },
+      "not": { "required": ["blockedBy"] }
+    },
+    "actionableSuccessEnvelope": {
+      "description": "A successful operation that is contractually required to teach the next step. Fake-money sandbox control-protocol transitions use this definition because they cannot mutate a provider, customer resource, or real payment instrument; a §3.1 public mutation must instead satisfy mutatingSuccessEnvelope.",
+      "allOf": [
+        { "$ref": "#/$defs/successEnvelope" },
+        {
+          "type": "object",
+          "required": ["nextActions"],
+          "properties": {
+            "nextActions": { "$ref": "#/$defs/actionableNextActions" }
+          }
+        }
+      ]
+    },
+    "mutatingSuccessEnvelope": {
+      "description": "The complete §3.1 envelope for every successful public mutation: governance evidence inside data and a non-empty nextActions array at the top level.",
+      "allOf": [
+        { "$ref": "#/$defs/actionableSuccessEnvelope" },
+        {
+          "type": "object",
+          "required": ["data", "nextActions"],
+          "properties": {
+            "data": { "$ref": "#/$defs/mutatingSuccessData" },
+            "nextActions": { "$ref": "#/$defs/actionableNextActions" },
+            "replayed": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "mutatingSuccessData": {
+      "type": "object",
+      "description": "The §3.1 contract for the `data` object of a successful public mutation: receipt, undo, and budgetRemainingUsd. nextActions belongs only at the top level of the envelope.",
+      "required": ["receipt", "undo", "budgetRemainingUsd"],
+      "properties": {
+        "receipt": { "$ref": "#/$defs/receipt" },
+        "undo": { "$ref": "#/$defs/undo" },
+        "budgetRemainingUsd": { "type": "number", "minimum": 0 }
+      },
+      "not": {
+        "anyOf": [{ "required": ["nextActions"] }, { "required": ["replayed"] }]
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "description": "What happened: the action, its costs, and provider references for everything created (§3.1).",
+      "required": ["action", "oneTimeUsd", "monthlyDeltaUsd", "resources"],
+      "properties": {
+        "action": { "type": "string", "minLength": 1 },
+        "oneTimeUsd": { "type": "number", "minimum": 0 },
+        "monthlyDeltaUsd": { "type": "number" },
+        "resources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind", "provider", "externalId"],
+            "properties": {
+              "kind": { "type": "string", "minLength": 1 },
+              "provider": { "type": "string", "minLength": 1 },
+              "externalId": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "undo": {
+      "description": "How to reverse the mutation: a concrete command/call with irreversible:false, or the explicit object {command:null, irreversible:true}. A bare null is invalid (§3.1).",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["command", "irreversible"],
+          "properties": {
+            "command": { "type": "string", "minLength": 1 },
+            "irreversible": { "const": false }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["command", "irreversible"],
+          "properties": {
+            "command": { "type": "null" },
+            "irreversible": { "const": true }
+          }
+        }
+      ]
+    },
+    "nextActions": {
+      "type": "array",
+      "description": "Ordered sensible next calls (§3.1). Array order is execution order. When authority changes or a precondition is required, the instruction names the actor and the required endpoint, header, or ordering constraint; clients must not infer omitted authority.",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "actionableNextActions": {
+      "description": "A non-empty continuation list required by actionableSuccessEnvelope.",
+      "allOf": [{ "$ref": "#/$defs/nextActions" }],
+      "minItems": 1
+    },
+    "errorEnvelope": {
+      "type": "object",
+      "description": "Error (§3.2). blockedBy names the specific gate in a namespaced vocabulary. resolution, when present, is the machine-readable legitimate path forward; when absent, no legitimate path exists.",
+      "required": ["blockedBy"],
+      "properties": {
+        "blockedBy": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*:[a-z0-9_.]+$",
+          "description": "Namespaced gate identifier, e.g. policy:max_domain_price, budget:exceeded, input:invalid_domain. Values (not field names) use lower snake_case."
+        },
+        "message": { "type": "string" },
+        "limit": { "type": "number" },
+        "requested": { "type": "number" },
+        "retryable": { "type": "boolean" },
+        "resolution": { "$ref": "#/$defs/resolution" }
+      }
+    },
+    "resolution": {
+      "type": "object",
+      "description": "The legitimate path forward. `type` names the path; the remaining fields carry the artifact needed to walk it (a task id to poll, a URL to hand to the human, a hint for a retry).",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "e.g. human_approval, retry, signup, authenticate, update_billing, upgrade, unfreeze, human_action, human_dashboard"
+        },
+        "taskId": { "type": "string" },
+        "hint": { "type": "string" },
+        "url": { "type": "string", "format": "uri" },
+        "signupUrl": { "type": "string", "format": "uri" },
+        "billingUrl": { "type": "string", "format": "uri" },
+        "dashboardUrl": { "type": "string", "format": "uri" },
+        "docs": { "type": "string", "format": "uri" },
+        "path": { "type": "string" },
+        "note": { "type": "string" }
+      }
+    }
+  }
+}
