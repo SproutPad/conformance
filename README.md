@@ -5,6 +5,9 @@
 > (source: [`SproutPad/conformance`](https://github.com/SproutPad/conformance)).
 > Prefer the npm pin for reproducible digests; `npx --yes github:SproutPad/conformance`
 > remains a secondary path.
+>
+> **`@0.1.0` was unpublished.** That release had a broken CLI entrypoint
+> (silent exit under `npx`). Use `@0.1.1` only.
 
 An independently runnable checker for SproutPad's public wire contract,
 discovery surfaces, MCP contract, and optional governed scratch loop. The
