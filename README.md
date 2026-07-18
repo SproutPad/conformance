@@ -26,8 +26,11 @@ npx @sproutpad/conformance@0.1.1 --base-url https://api.sproutpad.ai
 That runs the `anonymous` profile: wire-envelope probes plus public discovery,
 MCP initialization/tool parity, structured errors, and anonymous search.
 Default human output prints profile, baseUrl, pass/fail/skip counts, and notes
-that governed stays `not_run` without credentials. Public anonymous green means
-wire + discovery (+ MCP) only — not a full money-loop claim.
+that governed stays `not_run` without credentials — that stub is expected, not
+a defect. Public anonymous green means wire + discovery (+ MCP) only. SproutPad's
+separately signed `profile: "governed"` card at
+`GET /v1/conformance/runs/latest` (`.data.governed`) is the operator money-loop
+attestation; outsiders verify that card offline rather than re-running the canary.
 
 For the smaller envelope-only grade:
 
