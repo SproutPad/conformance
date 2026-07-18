@@ -20,3 +20,10 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run pack:check
+      - name: Smoke npx CLI entrypoint
+        run: |
+          set -euo pipefail
+          npx --yes . --help | grep -F 'Usage: sproutpad-conformance'
+          out="$(mktemp)"
+          npx --yes . --base-url https://api.sproutpad.ai --json >"$out"
+          jq -e '.summary.outcome == "pass"' "$out" >/dev/null

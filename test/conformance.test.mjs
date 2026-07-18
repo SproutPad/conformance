@@ -252,7 +252,7 @@ describe("standalone conformance package", () => {
     const rendered = renderMarkdown({
       ranAt: "2026-07-16T00:00:00.000Z",
       baseUrl: "https://implementation.example",
-      checkerVersion: "0.1.0",
+      checkerVersion: "0.1.1",
       profile: "wire",
       schema: { sha256: "a".repeat(64) },
       suites: [
@@ -268,11 +268,17 @@ describe("standalone conformance package", () => {
           ],
         },
       ],
-      summary: { passed: 0, total: 1, outcome: "fail" },
+      summary: { passed: 0, failed: 1, skipped: 0, total: 1, outcome: "fail" },
     });
 
     expect(rendered).toContain("first \\| second<br>forged row");
     expect(rendered).not.toContain("second\nforged row");
+    expect(rendered).toContain(
+      "profile: wire · baseUrl: https://implementation.example · pass=0 fail=1 skip=0",
+    );
+    expect(rendered).toContain(
+      "governed: not_run (no credentials; verify published governed card via GET /v1/conformance/runs/latest)",
+    );
   });
 
   it("bounds untrusted response bodies before parsing them", async () => {

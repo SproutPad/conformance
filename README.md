@@ -1,10 +1,10 @@
 # SproutPad conformance checker
 
-> **Release status:** public GitHub repository is live at
-> [`SproutPad/conformance`](https://github.com/SproutPad/conformance). Run with
-> `npx --yes github:SproutPad/conformance`. The npm package
-> `@sproutpad/conformance` is not published yet (owner gate); prefer the
-> GitHub install until then.
+> **Release status:** public and runnable. Pin
+> [`@sproutpad/conformance@0.1.1`](https://www.npmjs.com/package/@sproutpad/conformance)
+> (source: [`SproutPad/conformance`](https://github.com/SproutPad/conformance)).
+> Prefer the npm pin for reproducible digests; `npx --yes github:SproutPad/conformance`
+> remains a secondary path.
 
 An independently runnable checker for SproutPad's public wire contract,
 discovery surfaces, MCP contract, and optional governed scratch loop. The
@@ -12,29 +12,36 @@ default profile is credential-free. It grades responses against the schema
 bundled with this package; a target cannot make itself pass by serving a weaker
 schema.
 
+**Exit codes:** `0` = grade/verify pass; `1` = grade/verify fail; `2` = usage
+error or CLI entrypoint failure (never silent success).
+
 ## Run it
 
 ```bash
-npx --yes github:SproutPad/conformance --base-url https://api.example.com
-# After npm publication:
-# npx @sproutpad/conformance@0.1.0 --base-url https://api.example.com
+npx @sproutpad/conformance@0.1.1 --base-url https://api.sproutpad.ai
+# Secondary (tracks GitHub main tip):
+# npx --yes github:SproutPad/conformance --base-url https://api.sproutpad.ai
 ```
 
 That runs the `anonymous` profile: wire-envelope probes plus public discovery,
-MCP initialization/tool parity, structured errors, and anonymous search. For
-the smaller envelope-only grade:
+MCP initialization/tool parity, structured errors, and anonymous search.
+Default human output prints profile, baseUrl, pass/fail/skip counts, and notes
+that governed stays `not_run` without credentials. Public anonymous green means
+wire + discovery (+ MCP) only — not a full money-loop claim.
+
+For the smaller envelope-only grade:
 
 ```bash
-npx --yes github:SproutPad/conformance \
+npx @sproutpad/conformance@0.1.1 \
   --profile wire \
-  --base-url https://api.example.com
+  --base-url https://api.sproutpad.ai
 ```
 
 Machine-readable output:
 
 ```bash
-npx --yes github:SproutPad/conformance \
-  --base-url https://api.example.com \
+npx @sproutpad/conformance@0.1.1 \
+  --base-url https://api.sproutpad.ai \
   --json \
   --output conformance.json
 ```
@@ -44,17 +51,53 @@ The command exits `0` only when every required probe passes. `wire` and
 and deliberately rejected requests; they do not purchase, provision, approve,
 or tear down resources.
 
+## Verify a published signed run (outsider)
+
+SproutPad publishes signed anonymous and governed cards at
+`GET /v1/conformance/runs/latest`. Outsiders do **not** need access to the
+private Actions `runner.runUrl` (it may 404). Cryptographic verification uses
+the public API bundle + JWKS:
+
+```bash
+curl -sS https://api.sproutpad.ai/v1/conformance/runs/latest \
+  | jq '.data.anonymous.run | {report,digest,signature}' > bundle.json
+
+npx @sproutpad/conformance@0.1.1 verify bundle.json
+
+# Governed card (separate signed profile; outsiders verify, they do not re-run):
+curl -sS https://api.sproutpad.ai/v1/conformance/runs/latest \
+  | jq '.data.governed.run | {report,digest,signature}' > governed-bundle.json
+npx @sproutpad/conformance@0.1.1 verify governed-bundle.json
+```
+
+By default the verifier fetches the pinned SproutPad JWKS at
+`https://api.sproutpad.ai/.well-known/conformance-jwks.json` (no redirects,
+10s timeout, 1 MiB cap). It never trusts a JWKS URL found inside the bundle.
+For air-gapped verification, pass a local JWKS file:
+
+```bash
+curl -sS https://api.sproutpad.ai/.well-known/conformance-jwks.json > jwks.json
+npx @sproutpad/conformance@0.1.1 verify bundle.json --jwks jwks.json
+```
+
+The check recomputes the JCS digest (ECMAScript number serialization, UTF-16
+key order) and verifies the ES256 JWS with purpose
+`sproutpad-conformance-run+jws`, then pins target URL and runner provenance to
+SproutPad's published trust policy. Exit code `0` means every check passed.
+
+Programmatic use:
+
+```javascript
+import { verifyConformanceBundle, loadTrustedConformanceJwks, resolveTrustedConformanceJwksSource } from "@sproutpad/conformance/verify";
+import { canonicalJsonDigest } from "@sproutpad/conformance/canonical";
+```
+
 ## Governed scratch profile
 
 `governed` is deliberately harder to invoke because it mutates one project.
-It first tears that project down, proves the inventory is empty, quotes and
-launches a disposable scratch service, checks live status, and tears the
-project down again. Never point it at a customer or shared project.
-
-The CLI reads credentials only from the environment; there are no credential
-CLI flags. Use a dedicated narrow key/project and bind the destructive
-confirmation to both the canonical HTTPS target origin and that exact project
-id:
+SproutPad does **not** publish the canary agent key. Outsiders should verify
+the published governed card (above) or use the fake-money `/sandbox` for
+mutation demos. Operators with a dedicated disposable project may re-run:
 
 ```bash
 export CONFORMANCE_AGENT_KEY='agk_...'
@@ -65,7 +108,7 @@ export CONFORMANCE_GOVERNED_CONFIRM="TEARDOWN:${CONFORMANCE_TARGET_ORIGIN}:${CON
 # Optional only when the disposable project's cap is below the $25 default:
 # export CONFORMANCE_EXPECTED_BUDGET_USD='5'
 
-npx @sproutpad/conformance@0.1.0 \
+npx @sproutpad/conformance@0.1.1 \
   --profile governed \
   --base-url "${CONFORMANCE_TARGET_ORIGIN}"
 ```
@@ -86,43 +129,6 @@ are redacted before they enter the result.
 The governed profile refuses plaintext HTTP before sending any request. Wire
 and anonymous profiles may still target HTTP development servers because they
 never transmit a credential or perform an authorized mutation.
-
-## Verify a published signed run (outsider)
-
-The live `/conformance` page and `GET /v1/conformance/runs/latest` expose the
-current signed anonymous and governed reports plus digests. Download a bundle
-(`{report,digest,signature}`) and verify it offline with this package:
-
-```bash
-curl -sS https://api.sproutpad.ai/v1/conformance/runs/latest \
-  | jq '.data.anonymous.run | {report,digest,signature}' > bundle.json
-
-npx --yes github:SproutPad/conformance verify bundle.json
-# After npm publication:
-# npx @sproutpad/conformance@0.1.0 verify bundle.json
-```
-
-By default the verifier fetches the pinned SproutPad JWKS at
-`https://api.sproutpad.ai/.well-known/conformance-jwks.json` (no redirects,
-10s timeout, 1 MiB cap). It never trusts a JWKS URL found inside the bundle.
-For air-gapped verification, pass a local JWKS file:
-
-```bash
-curl -sS https://api.sproutpad.ai/.well-known/conformance-jwks.json > jwks.json
-npx --yes github:SproutPad/conformance verify bundle.json --jwks jwks.json
-```
-
-The check recomputes the JCS digest (ECMAScript number serialization, UTF-16
-key order) and verifies the ES256 JWS with purpose
-`sproutpad-conformance-run+jws`, then pins target URL and runner provenance to
-SproutPad's published trust policy. Exit code `0` means every check passed.
-
-Programmatic use:
-
-```javascript
-import { verifyConformanceBundle, loadTrustedConformanceJwks, resolveTrustedConformanceJwksSource } from "@sproutpad/conformance/verify";
-import { canonicalJsonDigest } from "@sproutpad/conformance/canonical";
-```
 
 ## What it checks
 
@@ -153,6 +159,7 @@ not create or impersonate an official SproutPad attestation.
 npm ci
 npm test
 npm run pack:check
+npx --yes . --help
 ```
 
 This directory is intentionally self-contained so it can be extracted as the
@@ -167,39 +174,13 @@ scripts disabled. There is deliberately no npm token fallback in the workflow.
 ### One-time npm bootstrap
 
 npm does not let an owner configure a trusted publisher for a package that does
-not exist yet. Creating `@sproutpad/conformance` therefore requires one manual,
-owner-approved bootstrap publication before `publish.yml` can use OIDC:
-
-1. Extract this directory into the public `SproutPad/conformance` repository
-   and review the exact commit to release.
-2. Authenticate an npm owner account protected by MFA using an interactive
-   login or a short-lived granular credential; never add that credential to
-   GitHub. In a clean temporary checkout, create and inspect a non-production
-   prerelease tarball without committing the temporary version change:
-
-   ```bash
-   npm version 0.0.0-oidc-bootstrap.0 --no-git-tag-version --ignore-scripts
-   npm ci --ignore-scripts
-   npm test
-   mkdir release
-   npm pack --ignore-scripts --pack-destination release
-   shasum -a 256 release/*.tgz
-   npm publish release/*.tgz --access public --tag bootstrap --ignore-scripts
-   ```
-
-3. In the new package's npm settings, configure the trusted publisher for
-   organization `SproutPad`, repository `conformance`, workflow
-   `publish.yml`, GitHub environment `npm`, and the `npm publish` allowed
-   action. Configure that environment with required reviewers and
-   deployment-branch restrictions.
-4. Sign out or revoke the bootstrap credential. From then on, publish reviewed
-   versions only through the manually dispatched, environment-approved OIDC
-   workflow. After its first successful run, set npm publishing access to
-   require 2FA and disallow traditional tokens.
-
-The bootstrap prerelease intentionally leaves `0.1.0` available for the first
-normal, provenance-bearing workflow release. It is a one-time package-creation
-step, not a token-based fallback path for later versions.
+not exist yet. Creating `@sproutpad/conformance` therefore required one manual,
+owner-approved bootstrap publication before `publish.yml` can use OIDC. That
+bootstrap (`0.0.0-oidc-bootstrap.0` on tag `bootstrap`) is done; subsequent
+releases use the manually dispatched, environment-approved OIDC workflow (or
+owner MFA publish when OIDC is unavailable). Configure the trusted publisher
+for organization `SproutPad`, repository `conformance`, workflow `publish.yml`,
+GitHub environment `npm`, and the `npm publish` allowed action.
 
 ## License
 

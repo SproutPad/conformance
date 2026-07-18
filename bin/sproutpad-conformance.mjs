@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
-import { pathToFileURL } from "node:url";
+import { basename } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CONFORMANCE_PROFILES, runConformanceSuite } from "../lib/suite.mjs";
 import {
   PUBLIC_CONFORMANCE_TRUST,
@@ -8,6 +10,26 @@ import {
   resolveTrustedConformanceJwksSource,
   verifyConformanceBundle,
 } from "../lib/verify.mjs";
+
+/** True when this file is the process entry (including npm/npx .bin symlinks). */
+export function isDirectCliInvocation(argv1 = process.argv[1]) {
+  if (!argv1) return false;
+  try {
+    return (
+      realpathSync(argv1) === realpathSync(fileURLToPath(import.meta.url))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function looksLikeCliEntry(argv1 = process.argv[1]) {
+  if (!argv1) return false;
+  const base = basename(argv1);
+  return (
+    base === "sproutpad-conformance" || base === "sproutpad-conformance.mjs"
+  );
+}
 
 function gradeUsage() {
   return `Usage: sproutpad-conformance [options]
@@ -100,6 +122,10 @@ function markdownCell(value) {
 }
 
 export function renderMarkdown(summary) {
+  const passed = summary.summary.passed;
+  const failed = summary.summary.failed;
+  const skipped = summary.summary.skipped ?? 0;
+  const total = summary.summary.total;
   const lines = [
     `## SproutPad conformance — ${summary.ranAt}`,
     "",
@@ -126,9 +152,16 @@ export function renderMarkdown(summary) {
   }
   lines.push(
     "",
-    `**${summary.summary.passed}/${summary.summary.total} required probes passed — ${summary.summary.outcome.toUpperCase()}**`,
+    `**${passed}/${total} required probes passed — ${summary.summary.outcome.toUpperCase()}**`,
     "",
+    `profile: ${summary.profile} · baseUrl: ${summary.baseUrl} · pass=${passed} fail=${failed} skip=${skipped}`,
   );
+  if (summary.profile === "anonymous" || summary.profile === "wire") {
+    lines.push(
+      "governed: not_run (no credentials; verify published governed card via GET /v1/conformance/runs/latest)",
+    );
+  }
+  lines.push("");
   return lines.join("\n");
 }
 
@@ -195,10 +228,7 @@ export async function main(argv = process.argv.slice(2)) {
   return summary.summary.outcome === "pass" ? 0 : 1;
 }
 
-if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(process.argv[1]).href
-) {
+if (isDirectCliInvocation()) {
   main().then(
     (code) => {
       process.exitCode = code;
@@ -210,4 +240,10 @@ if (
       process.exitCode = 2;
     },
   );
+} else if (looksLikeCliEntry()) {
+  // Invoked under the CLI name but realpath resolution failed — never silent.
+  process.stderr.write(
+    "sproutpad-conformance: could not resolve CLI entry path (realpath mismatch)\n",
+  );
+  process.exitCode = 2;
 }
