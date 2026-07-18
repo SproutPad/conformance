@@ -1,8 +1,10 @@
 # SproutPad conformance checker
 
-> **Release status:** extraction candidate. The public repository and npm
-> package are not published yet. The commands below become valid only after an
-> owner-approved release.
+> **Release status:** public GitHub repository is live at
+> [`SproutPad/conformance`](https://github.com/SproutPad/conformance). Run with
+> `npx --yes github:SproutPad/conformance`. The npm package
+> `@sproutpad/conformance` is not published yet (owner gate); prefer the
+> GitHub install until then.
 
 An independently runnable checker for SproutPad's public wire contract,
 discovery surfaces, MCP contract, and optional governed scratch loop. The
@@ -13,7 +15,9 @@ schema.
 ## Run it
 
 ```bash
-npx @sproutpad/conformance@0.1.0 --base-url https://api.example.com
+npx --yes github:SproutPad/conformance --base-url https://api.example.com
+# After npm publication:
+# npx @sproutpad/conformance@0.1.0 --base-url https://api.example.com
 ```
 
 That runs the `anonymous` profile: wire-envelope probes plus public discovery,
@@ -21,7 +25,7 @@ MCP initialization/tool parity, structured errors, and anonymous search. For
 the smaller envelope-only grade:
 
 ```bash
-npx @sproutpad/conformance@0.1.0 \
+npx --yes github:SproutPad/conformance \
   --profile wire \
   --base-url https://api.example.com
 ```
@@ -29,7 +33,7 @@ npx @sproutpad/conformance@0.1.0 \
 Machine-readable output:
 
 ```bash
-npx @sproutpad/conformance@0.1.0 \
+npx --yes github:SproutPad/conformance \
   --base-url https://api.example.com \
   --json \
   --output conformance.json
