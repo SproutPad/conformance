@@ -224,6 +224,7 @@ describe("standalone conformance package", () => {
         "report.json",
       ]),
     ).toEqual({
+      mode: "grade",
       baseUrl: "https://implementation.example",
       profile: "anonymous",
       json: true,

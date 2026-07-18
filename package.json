@@ -18,7 +18,9 @@
   "exports": {
     ".": "./lib/suite.mjs",
     "./wire": "./lib/conformance.mjs",
-    "./public-evals": "./lib/public-evals.mjs"
+    "./public-evals": "./lib/public-evals.mjs",
+    "./canonical": "./lib/canonical.mjs",
+    "./verify": "./lib/verify.mjs"
   },
   "files": [
     "bin/",

@@ -90,21 +90,39 @@ never transmit a credential or perform an authorized mutation.
 ## Verify a published signed run (outsider)
 
 The live `/conformance` page and `GET /v1/conformance/runs/latest` expose the
-current signed anonymous and governed reports plus digests. Outsiders can
-re-check the published JWKS without repository access:
+current signed anonymous and governed reports plus digests. Download a bundle
+(`{report,digest,signature}`) and verify it offline with this package:
 
 ```bash
 curl -sS https://api.sproutpad.ai/v1/conformance/runs/latest \
-  | jq '{state: .data.state, anonymous: .data.anonymous.state, governed: .data.governed.state, digest: .data.headDigest}'
-curl -sS https://api.sproutpad.ai/.well-known/conformance-jwks.json | jq '.keys[].kid'
+  | jq '.data.anonymous.run | {report,digest,signature}' > bundle.json
+
+npx --yes github:SproutPad/conformance verify bundle.json
+# After npm publication:
+# npx @sproutpad/conformance@0.1.0 verify bundle.json
 ```
 
-Full offline cryptographic verification of a downloaded `{report,digest,signature}`
-bundle (JCS digest + `sproutpad-conformance-run+jws`) is available in the
-SproutPad control-plane tree as `pnpm conformance:verify <bundle.json>` and will
-be extracted into this package in a follow-up once the portable verifier is
-decoupled from private packages. Until then, the browser `/conformance` page
-re-verifies the same JWS against the published JWKS.
+By default the verifier fetches the pinned SproutPad JWKS at
+`https://api.sproutpad.ai/.well-known/conformance-jwks.json` (no redirects,
+10s timeout, 1 MiB cap). It never trusts a JWKS URL found inside the bundle.
+For air-gapped verification, pass a local JWKS file:
+
+```bash
+curl -sS https://api.sproutpad.ai/.well-known/conformance-jwks.json > jwks.json
+npx --yes github:SproutPad/conformance verify bundle.json --jwks jwks.json
+```
+
+The check recomputes the JCS digest (ECMAScript number serialization, UTF-16
+key order) and verifies the ES256 JWS with purpose
+`sproutpad-conformance-run+jws`, then pins target URL and runner provenance to
+SproutPad's published trust policy. Exit code `0` means every check passed.
+
+Programmatic use:
+
+```javascript
+import { verifyConformanceBundle, loadTrustedConformanceJwks, resolveTrustedConformanceJwksSource } from "@sproutpad/conformance/verify";
+import { canonicalJsonDigest } from "@sproutpad/conformance/canonical";
+```
 
 ## What it checks
 
