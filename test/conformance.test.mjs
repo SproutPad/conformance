@@ -242,7 +242,7 @@ describe("standalone conformance package", () => {
     );
     expect(CHECKER_VERSION).toBe(packageJson.version);
     expect(packageJson.license).toBe("MIT AND CC-BY-4.0");
-    expect(packageJson.version).toBe("0.2.0");
+    expect(packageJson.version).toBe("0.2.1");
   });
 
   it("parses an explicit target and machine-readable output options", () => {
@@ -285,7 +285,7 @@ describe("standalone conformance package", () => {
     const rendered = renderMarkdown({
       ranAt: "2026-07-16T00:00:00.000Z",
       baseUrl: "https://implementation.example",
-      checkerVersion: "0.2.0",
+      checkerVersion: "0.2.1",
       profile: "wire",
       schema: { sha256: "a".repeat(64) },
       suites: [

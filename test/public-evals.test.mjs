@@ -221,6 +221,7 @@ function anonymousTarget({
   missingTaskIdStage,
   omitGovernedField,
   openApiDocument,
+  flatOnlyTaskAdmission = false,
 } = {}) {
   const requests = [];
   let serviceLive = false;
@@ -249,6 +250,65 @@ function anonymousTarget({
       }
     }
     if (emptyActionsStage === stage) envelope.data.actions = [];
+    return envelope;
+  }
+
+  function taskAdmissionEnvelope(stage, taskId, action, kind = "teardown") {
+    const pollAction = {
+      kind: "tool",
+      tool: "get_task",
+      arguments: { taskId },
+      afterMs: 5_000,
+      reason: "The durable operation is still running",
+    };
+    const envelope = {
+      data: {
+        task: {
+          taskId,
+          projectId: "prj_dedicated",
+          kind,
+          status: "working",
+          terminal: false,
+        },
+        actions: [pollAction],
+        result: {
+          admission: {
+            receipt: {
+              action,
+              oneTimeUsd: 0,
+              monthlyDeltaUsd: 0,
+              resources: [
+                {
+                  kind: "task",
+                  provider: "sproutpad",
+                  externalId: taskId,
+                },
+              ],
+            },
+            undo: { command: null, irreversible: true },
+            budgetRemainingUsd: 25,
+          },
+          details: { dryRun: false },
+        },
+      },
+    };
+    if (omitGovernedField?.stage === stage) {
+      if (omitGovernedField.field === "actions") {
+        delete envelope.data.actions;
+      } else if (
+        omitGovernedField.field === "receipt" ||
+        omitGovernedField.field === "undo"
+      ) {
+        delete envelope.data.result.admission[omitGovernedField.field];
+      } else {
+        delete envelope.data[omitGovernedField.field];
+      }
+    }
+    if (emptyActionsStage === stage) envelope.data.actions = [];
+    if (missingTaskIdStage === stage) {
+      delete envelope.data.task.taskId;
+      delete envelope.data.actions[0]?.arguments?.taskId;
+    }
     return envelope;
   }
 
@@ -345,21 +405,45 @@ function anonymousTarget({
       teardownCount += 1;
       serviceLive = false;
       const stage = teardownCount === 1 ? "reset" : "teardown";
-      return json(
-        mutatingEnvelope(
-          stage,
-          missingTaskIdStage === stage
-            ? {}
-            : { taskId: `tsk_teardown_${teardownCount}` },
-          stage === "reset" ? "reset_scratch_project" : "teardown_project",
-          [
-            {
-              kind: "tool",
-              tool: "get_task",
-              arguments: { taskId: `tsk_teardown_${teardownCount}` },
-              reason: "Poll teardown to completion",
+      if (flatOnlyTaskAdmission && stage === "reset") {
+        const taskId = `tsk_teardown_${teardownCount}`;
+        return json(
+          {
+            data: {
+              taskId,
+              receipt: {
+                action: "teardown_task_accepted",
+                oneTimeUsd: 0,
+                monthlyDeltaUsd: 0,
+                resources: [
+                  {
+                    kind: "task",
+                    provider: "sproutpad",
+                    externalId: taskId,
+                  },
+                ],
+              },
+              undo: { command: null, irreversible: true },
+              budgetRemainingUsd: 25,
+              actions: [
+                {
+                  kind: "tool",
+                  tool: "get_task",
+                  arguments: { taskId },
+                  reason: "Poll teardown to completion",
+                },
+              ],
             },
-          ],
+          },
+          202,
+        );
+      }
+      return json(
+        taskAdmissionEnvelope(
+          stage,
+          `tsk_teardown_${teardownCount}`,
+          "teardown_task_accepted",
+          "teardown",
         ),
         202,
       );
@@ -405,18 +489,11 @@ function anonymousTarget({
       }
       serviceLive = true;
       return json(
-        mutatingEnvelope(
+        taskAdmissionEnvelope(
           "launch",
-          missingTaskIdStage === "launch" ? {} : { taskId: "tsk_launch" },
-          "launch_service",
-          [
-            {
-              kind: "tool",
-              tool: "get_task",
-              arguments: { taskId: "tsk_launch" },
-              reason: "Poll launch to completion",
-            },
-          ],
+          "tsk_launch",
+          "launch_service_task_accepted",
+          "launch_site",
         ),
         202,
       );
@@ -444,7 +521,24 @@ function anonymousTarget({
       return json(envelope);
     }
     if (governed && url.pathname.startsWith("/v1/tasks/tsk_")) {
-      return json({ data: { status: "completed" } });
+      const taskId = url.pathname.slice("/v1/tasks/".length);
+      return json({
+        data: {
+          task: {
+            taskId,
+            projectId: "prj_dedicated",
+            kind: taskId.includes("launch") ? "launch_site" : "teardown",
+            status: "completed",
+            terminal: true,
+          },
+          actions: [
+            {
+              kind: "stop",
+              reason: "Task completed",
+            },
+          ],
+        },
+      });
     }
     throw new Error(`unexpected request ${url.pathname}`);
   };
@@ -747,7 +841,7 @@ describe("public discovery and governed evaluator", () => {
     ).toMatchObject({
       status: "fail",
       error: expect.stringContaining(
-        "without a taskId; admission is ambiguous",
+        "without nested data.task.taskId; admission is ambiguous",
       ),
     });
     expect(
@@ -828,7 +922,7 @@ describe("public discovery and governed evaluator", () => {
     ).toMatchObject({
       status: "fail",
       error: expect.stringContaining(
-        "without a taskId; admission is ambiguous",
+        "without nested data.task.taskId; admission is ambiguous",
       ),
     });
     expect(
@@ -943,6 +1037,28 @@ describe("public discovery and governed evaluator", () => {
           request.init.method === "POST",
       ),
     ).toHaveLength(1);
+  });
+
+  it("fails flat-only teardown admission that omits nested data.task", async () => {
+    const target = anonymousTarget({
+      governed: true,
+      flatOnlyTaskAdmission: true,
+    });
+    const result = await runPublicEvals({
+      baseUrl: BASE_URL,
+      fetchImpl: target.fetchImpl,
+      agentKey: "agk_dedicated.secret",
+      projectId: "prj_dedicated",
+      scratchDomainSuffix: "scratch.example.com",
+      includeMcpContract: false,
+      pollIntervalMs: 1,
+    });
+    expect(
+      result.scenarios.find((scenario) => scenario.id === "loop.quote"),
+    ).toMatchObject({
+      status: "fail",
+      error: expect.stringContaining("without nested data.task.taskId"),
+    });
   });
 
   it("fails an otherwise-valid v2 catalog linked only through toolCatalog", async () => {
