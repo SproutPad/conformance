@@ -12,15 +12,25 @@ export function validMutationOpenApi() {
           content: {
             "application/json": {
               schema: {
-                allOf: [
-                  {
-                    $ref: "#/components/schemas/MutatingSuccessEnvelope",
-                  },
-                  {
+                type: "object",
+                additionalProperties: false,
+                required: ["data"],
+                properties: {
+                  data: {
                     type: "object",
-                    properties: { data: { type: "object" } },
+                    required: ["receipt", "undo", "budgetRemainingUsd", "actions"],
+                    properties: {
+                      receipt: { $ref: "#/components/schemas/Receipt" },
+                      undo: { $ref: "#/components/schemas/Undo" },
+                      budgetRemainingUsd: { type: "number", minimum: 0 },
+                      actions: {
+                        type: "array",
+                        minItems: 1,
+                        items: { $ref: "#/components/schemas/AgentAction" },
+                      },
+                    },
                   },
-                ],
+                },
               },
             },
           },
@@ -33,10 +43,16 @@ export function validMutationOpenApi() {
     paths,
     components: {
       schemas: {
-        ResponseEnvelope: {
-          type: "object",
-          required: ["data"],
-          properties: { data: {} },
+        AgentAction: {
+          oneOf: [
+            { type: "object", required: ["kind", "tool", "arguments"] },
+            { type: "object", required: ["kind", "url", "purpose", "requiresHuman"] },
+            { type: "object", required: ["kind", "reason"] },
+            {
+              type: "object",
+              required: ["kind", "purpose", "instruction", "requiresHuman"],
+            },
+          ],
         },
         Receipt: {
           type: "object",
@@ -76,53 +92,6 @@ export function validMutationOpenApi() {
                 command: { type: "null" },
                 irreversible: { type: "boolean", const: true },
               },
-            },
-          ],
-        },
-        MutatingSuccessData: {
-          type: "object",
-          required: ["receipt", "undo", "budgetRemainingUsd"],
-          properties: {
-            receipt: { $ref: "#/components/schemas/Receipt" },
-            undo: { $ref: "#/components/schemas/Undo" },
-            budgetRemainingUsd: { type: "number", minimum: 0 },
-          },
-          not: {
-            anyOf: [{ required: ["nextActions"] }, { required: ["replayed"] }],
-          },
-        },
-        ActionableSuccessEnvelope: {
-          allOf: [
-            { $ref: "#/components/schemas/ResponseEnvelope" },
-            {
-              type: "object",
-              required: ["data", "nextActions"],
-              properties: {
-                nextActions: {
-                  type: "array",
-                  minItems: 1,
-                  items: { type: "string", minLength: 1 },
-                },
-              },
-            },
-          ],
-        },
-        MutatingSuccessEnvelope: {
-          allOf: [
-            { $ref: "#/components/schemas/ActionableSuccessEnvelope" },
-            {
-              type: "object",
-              required: ["data", "nextActions"],
-              properties: {
-                data: { $ref: "#/components/schemas/MutatingSuccessData" },
-                nextActions: {
-                  type: "array",
-                  minItems: 1,
-                  items: { type: "string", minLength: 1 },
-                },
-                replayed: { type: "boolean" },
-              },
-              additionalProperties: false,
             },
           ],
         },

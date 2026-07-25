@@ -189,6 +189,10 @@ export async function verifyBundle(bundlePath, jwksPath) {
     valid: verification.ok,
     checks: verification.checks,
     errors: verification.errors,
+    outcome:
+      typeof report.summary?.outcome === "string"
+        ? report.summary.outcome
+        : verification.outcome,
     runId: typeof report.runId === "string" ? report.runId : verification.runId,
     digest:
       typeof bundle.digest === "string" ? bundle.digest : verification.digest,

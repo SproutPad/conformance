@@ -26,7 +26,7 @@ function anonymousTarget({
   governed = false,
   whoamiData,
   launchFailure = false,
-  emptyNextActionsStage,
+  emptyActionsStage,
   missingTaskIdStage,
   omitGovernedField,
   openApiDocument,
@@ -35,7 +35,7 @@ function anonymousTarget({
   let serviceLive = false;
   let teardownCount = 0;
 
-  function mutatingEnvelope(stage, data, action, nextActions) {
+  function mutatingEnvelope(stage, data, action, actions) {
     const envelope = {
       data: {
         ...data,
@@ -47,17 +47,17 @@ function anonymousTarget({
         },
         undo: { command: `undo ${action}`, irreversible: false },
         budgetRemainingUsd: 25,
+        actions,
       },
-      nextActions,
     };
     if (omitGovernedField?.stage === stage) {
-      if (omitGovernedField.field === "nextActions") {
-        delete envelope.nextActions;
+      if (omitGovernedField.field === "actions") {
+        delete envelope.data.actions;
       } else {
         delete envelope.data[omitGovernedField.field];
       }
     }
-    if (emptyNextActionsStage === stage) envelope.nextActions = [];
+    if (emptyActionsStage === stage) envelope.data.actions = [];
     return envelope;
   }
 
@@ -78,7 +78,21 @@ function anonymousTarget({
       return json({ data: { governance: {} } });
     }
     if (url.pathname === "/v1/domains/search") {
-      return json({ data: { results: [] } });
+      return json({
+        data: {
+          results: [],
+          truncated: false,
+          actions: [
+            {
+              kind: "tool",
+              tool: "estimate",
+              arguments: {},
+              requiredArguments: ["domain"],
+              reason: "Price one concrete domain before quoting",
+            },
+          ],
+        },
+      });
     }
     if (governed && url.pathname === "/v1/whoami") {
       return json({
@@ -103,11 +117,34 @@ function anonymousTarget({
             "quote",
             { verdict: "ALLOW" },
             "reserve_quote_budget",
-            ["launch_service"],
+            [
+              {
+                kind: "tool",
+                tool: "launch_service",
+                arguments: {},
+                requiredArguments: ["domain", "target", "service"],
+                reason: "Launch after an ALLOW quote",
+              },
+            ],
           ),
         );
       }
-      return json({ blockedBy: "auth:required" }, 401);
+      return json(
+        {
+          blockedBy: "auth:required",
+          message: "Authentication is required",
+          retryable: false,
+          actions: [
+            {
+              kind: "url",
+              url: "https://api.sproutpad.ai/docs",
+              purpose: "authenticate",
+              requiresHuman: true,
+            },
+          ],
+        },
+        401,
+      );
     }
     if (
       governed &&
@@ -124,7 +161,14 @@ function anonymousTarget({
             ? {}
             : { taskId: `tsk_teardown_${teardownCount}` },
           stage === "reset" ? "reset_scratch_project" : "teardown_project",
-          [`GET /v1/tasks/tsk_teardown_${teardownCount}`],
+          [
+            {
+              kind: "tool",
+              tool: "get_task",
+              arguments: { taskId: `tsk_teardown_${teardownCount}` },
+              reason: "Poll teardown to completion",
+            },
+          ],
         ),
         202,
       );
@@ -140,6 +184,28 @@ function anonymousTarget({
     }
     if (
       governed &&
+      url.pathname === "/v1/projects/prj_dedicated/assets" &&
+      init.method === "POST"
+    ) {
+      return json(
+        mutatingEnvelope(
+          "assets",
+          { bundleId: "bun_conformance" },
+          "asset_bundle_staged",
+          [
+            {
+              kind: "tool",
+              tool: "launch_service",
+              arguments: { bundleId: "bun_conformance" },
+              reason: "Launch the staged static bundle",
+            },
+          ],
+        ),
+        201,
+      );
+    }
+    if (
+      governed &&
       url.pathname === "/v1/projects/prj_dedicated/launch" &&
       init.method === "POST"
     ) {
@@ -152,7 +218,14 @@ function anonymousTarget({
           "launch",
           missingTaskIdStage === "launch" ? {} : { taskId: "tsk_launch" },
           "launch_service",
-          ["GET /v1/tasks/tsk_launch"],
+          [
+            {
+              kind: "tool",
+              tool: "get_task",
+              arguments: { taskId: "tsk_launch" },
+              reason: "Poll launch to completion",
+            },
+          ],
         ),
         202,
       );
@@ -161,14 +234,21 @@ function anonymousTarget({
       const envelope = {
         data: {
           services: serviceLive ? [{ name: "evalweb", status: "live" }] : [],
+          actions: [
+            {
+              kind: "tool",
+              tool: "get_costs",
+              arguments: { projectId: "prj_dedicated" },
+              reason: "Inspect spend after launch",
+            },
+          ],
         },
-        nextActions: ["get_costs"],
       };
       if (
         omitGovernedField?.stage === "status" &&
-        omitGovernedField.field === "nextActions"
+        omitGovernedField.field === "actions"
       ) {
-        delete envelope.nextActions;
+        delete envelope.data.actions;
       }
       return json(envelope);
     }
@@ -227,11 +307,22 @@ describe("public discovery and governed evaluator", () => {
     });
   });
 
-  it("fails discovery when OpenAPI weakens the canonical top-level mutation shape", async () => {
+  it("fails discovery when OpenAPI retains prose nextActions on a mutation success", async () => {
     const openApiDocument = validMutationOpenApi();
-    const branch =
-      openApiDocument.components.schemas.MutatingSuccessEnvelope.allOf[1];
-    delete branch.additionalProperties;
+    const firstPath = Object.keys(openApiDocument.paths)[0];
+    const operation = openApiDocument.paths[firstPath].post;
+    operation.responses["200"].content["application/json"].schema.properties =
+      {
+        data: { type: "object" },
+        nextActions: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string", minLength: 1 },
+        },
+      };
+    operation.responses["200"].content[
+      "application/json"
+    ].schema.required = ["data", "nextActions"];
     const target = anonymousTarget({ openApiDocument });
     const result = await runPublicEvals({
       baseUrl: BASE_URL,
@@ -243,7 +334,7 @@ describe("public discovery and governed evaluator", () => {
       result.scenarios.find((scenario) => scenario.id === "discovery.openapi"),
     ).toMatchObject({
       status: "fail",
-      error: expect.stringContaining("strictly combine"),
+      error: expect.stringContaining("nextActions"),
     });
   });
 
@@ -305,6 +396,7 @@ describe("public discovery and governed evaluator", () => {
       "POST /v1/projects/prj_dedicated/teardown",
       "GET /v1/tasks/tsk_teardown_1",
       "GET /v1/projects/prj_dedicated/resources",
+      "POST /v1/projects/prj_dedicated/assets",
       "POST /v1/quotes",
       "POST /v1/projects/prj_dedicated/launch",
       "GET /v1/tasks/tsk_launch",
@@ -312,14 +404,38 @@ describe("public discovery and governed evaluator", () => {
       "POST /v1/projects/prj_dedicated/teardown",
       "GET /v1/tasks/tsk_teardown_2",
     ]);
+    const staged = target.requests.find(
+      (request) =>
+        request.url.pathname === "/v1/projects/prj_dedicated/assets" &&
+        request.init.method === "POST",
+    );
+    expect(JSON.parse(staged.init.body)).toEqual({
+      files: [
+        {
+          path: "index.html",
+          contentBase64:
+            "PCFkb2N0eXBlIGh0bWw+PGh0bWw+PGhlYWQ+PHRpdGxlPlNwcm91dFBhZCBjb25mb3JtYW5jZTwvdGl0bGU+PC9oZWFkPjxib2R5PkNvbmZvcm1hbmNlIGNhbmFyeTwvYm9keT48L2h0bWw+",
+        },
+      ],
+    });
+    const launch = target.requests.find(
+      (request) =>
+        request.url.pathname === "/v1/projects/prj_dedicated/launch" &&
+        request.init.method === "POST",
+    );
+    expect(JSON.parse(launch.init.body)).toMatchObject({
+      target: "cloudflare",
+      bundleId: "bun_conformance",
+      service: "evalweb",
+    });
+    expect(JSON.parse(launch.init.body)).not.toHaveProperty("template");
   });
 
   it.each([
     ["quote", "receipt", "loop.quote"],
     ["launch", "undo", "loop.launch"],
-    ["teardown", "budgetRemainingUsd", "loop.teardown"],
-    ["launch", "nextActions", "loop.launch"],
-    ["status", "nextActions", "loop.status_live"],
+    ["launch", "actions", "loop.launch"],
+    ["status", "actions", "loop.status_live"],
   ])(
     "fails %s when the governed response omits %s",
     async (stage, field, expectedProbe) => {
@@ -355,7 +471,7 @@ describe("public discovery and governed evaluator", () => {
     async (stage, expectedProbe) => {
       const target = anonymousTarget({
         governed: true,
-        emptyNextActionsStage: stage,
+        emptyActionsStage: stage,
       });
       const result = await runPublicEvals({
         baseUrl: BASE_URL,
@@ -371,7 +487,7 @@ describe("public discovery and governed evaluator", () => {
         result.scenarios.find((scenario) => scenario.id === expectedProbe),
       ).toMatchObject({
         status: "fail",
-        error: expect.stringContaining("nextActions"),
+        error: expect.stringContaining("actions"),
       });
     },
   );

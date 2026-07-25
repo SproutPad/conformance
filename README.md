@@ -1,13 +1,15 @@
 # SproutPad conformance checker
 
 > **Release status:** public and runnable. Pin
-> [`@sproutpad/conformance@0.1.1`](https://www.npmjs.com/package/@sproutpad/conformance)
+> [`@sproutpad/conformance@0.2.0`](https://www.npmjs.com/package/@sproutpad/conformance)
 > (source: [`SproutPad/conformance`](https://github.com/SproutPad/conformance)).
 > Prefer the npm pin for reproducible digests; `npx --yes github:SproutPad/conformance`
 > remains a secondary path.
 >
+> **Dialect:** `@0.2.0` grades the typed-actions agent envelope (spec formatVersion 2). `@0.1.1` expects the retired prose `nextActions` / agent `resolution` dialect and will fail a v2 governor.
+>
 > **`@0.1.0` was unpublished.** That release had a broken CLI entrypoint
-> (silent exit under `npx`). Use `@0.1.1` only.
+> (silent exit under `npx`). Use `@0.2.0` only.
 
 An independently runnable checker for SproutPad's public wire contract,
 discovery surfaces, MCP contract, and optional governed scratch loop. The
@@ -21,7 +23,7 @@ error or CLI entrypoint failure (never silent success).
 ## Run it
 
 ```bash
-npx @sproutpad/conformance@0.1.1 --base-url https://api.sproutpad.ai
+npx @sproutpad/conformance@0.2.0 --base-url https://api.sproutpad.ai
 # Secondary (tracks GitHub main tip):
 # npx --yes github:SproutPad/conformance --base-url https://api.sproutpad.ai
 ```
@@ -38,7 +40,7 @@ attestation; outsiders verify that card offline rather than re-running the canar
 For the smaller envelope-only grade:
 
 ```bash
-npx @sproutpad/conformance@0.1.1 \
+npx @sproutpad/conformance@0.2.0 \
   --profile wire \
   --base-url https://api.sproutpad.ai
 ```
@@ -46,7 +48,7 @@ npx @sproutpad/conformance@0.1.1 \
 Machine-readable output:
 
 ```bash
-npx @sproutpad/conformance@0.1.1 \
+npx @sproutpad/conformance@0.2.0 \
   --base-url https://api.sproutpad.ai \
   --json \
   --output conformance.json
@@ -68,12 +70,12 @@ the public API bundle + JWKS:
 curl -sS https://api.sproutpad.ai/v1/conformance/runs/latest \
   | jq '.data.anonymous.run | {report,digest,signature}' > bundle.json
 
-npx @sproutpad/conformance@0.1.1 verify bundle.json
+npx @sproutpad/conformance@0.2.0 verify bundle.json
 
 # Governed card (separate signed profile; outsiders verify, they do not re-run):
 curl -sS https://api.sproutpad.ai/v1/conformance/runs/latest \
   | jq '.data.governed.run | {report,digest,signature}' > governed-bundle.json
-npx @sproutpad/conformance@0.1.1 verify governed-bundle.json
+npx @sproutpad/conformance@0.2.0 verify governed-bundle.json
 ```
 
 By default the verifier fetches the pinned SproutPad JWKS at
@@ -83,7 +85,7 @@ For air-gapped verification, pass a local JWKS file:
 
 ```bash
 curl -sS https://api.sproutpad.ai/.well-known/conformance-jwks.json > jwks.json
-npx @sproutpad/conformance@0.1.1 verify bundle.json --jwks jwks.json
+npx @sproutpad/conformance@0.2.0 verify bundle.json --jwks jwks.json
 ```
 
 The check recomputes the JCS digest (ECMAScript number serialization, UTF-16
@@ -94,7 +96,11 @@ SproutPad's published trust policy. Exit code `0` means every check passed.
 Programmatic use:
 
 ```javascript
-import { verifyConformanceBundle, loadTrustedConformanceJwks, resolveTrustedConformanceJwksSource } from "@sproutpad/conformance/verify";
+import {
+  verifyConformanceBundle,
+  loadTrustedConformanceJwks,
+  resolveTrustedConformanceJwksSource,
+} from "@sproutpad/conformance/verify";
 import { canonicalJsonDigest } from "@sproutpad/conformance/canonical";
 ```
 
@@ -114,7 +120,7 @@ export CONFORMANCE_GOVERNED_CONFIRM="TEARDOWN:${CONFORMANCE_TARGET_ORIGIN}:${CON
 # Optional only when the disposable project's cap is below the $25 default:
 # export CONFORMANCE_EXPECTED_BUDGET_USD='5'
 
-npx @sproutpad/conformance@0.1.1 \
+npx @sproutpad/conformance@0.2.0 \
   --profile governed \
   --base-url "${CONFORMANCE_TARGET_ORIGIN}"
 ```
@@ -135,6 +141,12 @@ are redacted before they enter the result.
 The governed profile refuses plaintext HTTP before sending any request. Wire
 and anonymous profiles may still target HTTP development servers because they
 never transmit a credential or perform an authorized mutation.
+
+The governed loop stages one tiny static HTML bundle and deploys it through
+the target's Cloudflare edge primitive. It does not use a service-starter
+catalog or an unattended container-image approval. The target must therefore
+have its edge deploy capability enabled; an unavailable edge target fails the
+governed result rather than falling back to a different deploy path.
 
 ## What it checks
 

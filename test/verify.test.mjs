@@ -3,6 +3,7 @@ import { canonicalJson, canonicalJsonDigest } from "../lib/canonical.mjs";
 import {
   CONFORMANCE_PROBE_INVENTORIES,
   CONFORMANCE_REPORT_SCHEMA_V2,
+  MAX_CONFORMANCE_REPORT_DURATION_MS,
   PUBLIC_CONFORMANCE_TRUST,
   resolveTrustedConformanceJwksSource,
   verifyConformanceBundle,
@@ -112,6 +113,8 @@ async function signedBundle(profile = "anonymous") {
       signature,
     },
     jwks,
+    privateKey,
+    kid,
   };
 }
 
@@ -132,6 +135,108 @@ describe("verifyConformanceBundle", () => {
       targetMatches: true,
       provenanceMatches: true,
       timeValid: true,
+    });
+  });
+
+  it("accepts a report spanning the protected runner's full job budget", async () => {
+    const { bundle, jwks, privateKey, kid } = await signedBundle();
+    const completedAt = new Date("2026-07-13T12:00:00.000Z");
+    bundle.report.startedAt = new Date(
+      completedAt.getTime() - MAX_CONFORMANCE_REPORT_DURATION_MS,
+    ).toISOString();
+    bundle.report.completedAt = completedAt.toISOString();
+    bundle.digest = canonicalJsonDigest(bundle.report);
+    bundle.signature = await signCanonicalReport(
+      bundle.report,
+      privateKey,
+      kid,
+    );
+
+    const verification = await verifyConformanceBundle(bundle, jwks, {
+      expectedBaseUrl: PUBLIC_CONFORMANCE_TRUST.baseUrl,
+      expectedRunnerProvenances: PUBLIC_CONFORMANCE_TRUST.runnerProvenances,
+      expectedRunnerKind: "github-actions",
+      now: new Date("2026-07-13T12:01:00.000Z"),
+    });
+
+    expect(verification.ok).toBe(true);
+    expect(verification.checks.timeValid).toBe(true);
+  });
+
+  it("rejects a report that exceeds the protected runner's job budget", async () => {
+    const { bundle, jwks, privateKey, kid } = await signedBundle();
+    const completedAt = new Date("2026-07-13T12:00:00.000Z");
+    bundle.report.startedAt = new Date(
+      completedAt.getTime() - MAX_CONFORMANCE_REPORT_DURATION_MS - 1,
+    ).toISOString();
+    bundle.report.completedAt = completedAt.toISOString();
+    bundle.digest = canonicalJsonDigest(bundle.report);
+    bundle.signature = await signCanonicalReport(
+      bundle.report,
+      privateKey,
+      kid,
+    );
+
+    await expect(
+      verifyConformanceBundle(bundle, jwks, {
+        expectedBaseUrl: PUBLIC_CONFORMANCE_TRUST.baseUrl,
+        expectedRunnerProvenances: PUBLIC_CONFORMANCE_TRUST.runnerProvenances,
+        expectedRunnerKind: "github-actions",
+        now: new Date("2026-07-13T12:01:00.000Z"),
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      checks: { schemaAndInventoryValid: false },
+      errors: expect.arrayContaining([
+        "conformance:time: Report time range is invalid",
+      ]),
+    });
+  });
+
+  it("rejects an authentic signed bundle when required probes fail", async () => {
+    const report = sampleReport();
+    report.suites[0].outcome = "fail";
+    report.suites[0].probes[0] = {
+      ...report.suites[0].probes[0],
+      status: "fail",
+      error: "probe failed",
+    };
+    report.summary = {
+      passed: report.summary.passed - 1,
+      failed: 1,
+      skipped: 0,
+      outcome: "fail",
+    };
+    const { privateKey, jwks, kid } = await generateSigningMaterial();
+    const signature = await signCanonicalReport(report, privateKey, kid);
+    const bundle = {
+      report,
+      digest: canonicalJsonDigest(report),
+      signature,
+    };
+
+    await expect(
+      verifyConformanceBundle(bundle, jwks, {
+        expectedBaseUrl: PUBLIC_CONFORMANCE_TRUST.baseUrl,
+        expectedRunnerProvenances: PUBLIC_CONFORMANCE_TRUST.runnerProvenances,
+        expectedRunnerKind: "github-actions",
+        now: new Date("2026-07-13T12:01:00.000Z"),
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      outcome: "fail",
+      checks: {
+        schemaAndInventoryValid: true,
+        digestMatches: true,
+        signatureValid: true,
+        targetMatches: true,
+        provenanceMatches: true,
+        timeValid: true,
+        reportPassed: false,
+      },
+      errors: expect.arrayContaining([
+        "conformance:outcome: Report outcome is not pass",
+      ]),
     });
   });
 
@@ -214,48 +319,56 @@ describe("verifyConformanceBundle", () => {
 });
 
 describe("live SproutPad bundle verification", () => {
-  it("verifies the latest published anonymous bundle when available", async () => {
-    let response;
-    try {
-      response = await fetch(
-        `${PUBLIC_CONFORMANCE_TRUST.baseUrl}/v1/conformance/runs/latest`,
-        { redirect: "error", signal: AbortSignal.timeout(10_000) },
+  it(
+    "verifies the latest published anonymous bundle when available",
+    async () => {
+      let response;
+      try {
+        response = await fetch(
+          `${PUBLIC_CONFORMANCE_TRUST.baseUrl}/v1/conformance/runs/latest`,
+          { redirect: "error", signal: AbortSignal.timeout(10_000) },
+        );
+      } catch {
+        return;
+      }
+      if (!response.ok) return;
+      const body = await response.json();
+      const run = body?.data?.anonymous?.run;
+      if (!run?.report || !run?.digest || !run?.signature) return;
+      // A cryptographically valid failing/red head is expected while a release
+      // republishes; only require full verifyConformanceBundle success for a
+      // published pass outcome.
+      if (run.outcome !== "pass") return;
+
+      let jwksResponse;
+      try {
+        jwksResponse = await fetch(PUBLIC_CONFORMANCE_TRUST.jwksUrl, {
+          redirect: "error",
+          signal: AbortSignal.timeout(10_000),
+        });
+      } catch {
+        return;
+      }
+      if (!jwksResponse.ok) return;
+      const jwks = JSON.parse(await jwksResponse.text());
+
+      const verification = await verifyConformanceBundle(
+        {
+          report: run.report,
+          digest: run.digest,
+          signature: run.signature,
+        },
+        jwks,
+        {
+          expectedBaseUrl: PUBLIC_CONFORMANCE_TRUST.baseUrl,
+          expectedRunnerProvenances: PUBLIC_CONFORMANCE_TRUST.runnerProvenances,
+          expectedRunnerKind: "github-actions",
+          now: new Date(),
+          maxFutureSkewMs: 10 * 60_000,
+        },
       );
-    } catch {
-      return;
-    }
-    if (!response.ok) return;
-    const body = await response.json();
-    const run = body?.data?.anonymous?.run;
-    if (!run?.report || !run?.digest || !run?.signature) return;
-
-    let jwksResponse;
-    try {
-      jwksResponse = await fetch(PUBLIC_CONFORMANCE_TRUST.jwksUrl, {
-        redirect: "error",
-        signal: AbortSignal.timeout(10_000),
-      });
-    } catch {
-      return;
-    }
-    if (!jwksResponse.ok) return;
-    const jwks = JSON.parse(await jwksResponse.text());
-
-    const verification = await verifyConformanceBundle(
-      {
-        report: run.report,
-        digest: run.digest,
-        signature: run.signature,
-      },
-      jwks,
-      {
-        expectedBaseUrl: PUBLIC_CONFORMANCE_TRUST.baseUrl,
-        expectedRunnerProvenances: PUBLIC_CONFORMANCE_TRUST.runnerProvenances,
-        expectedRunnerKind: "github-actions",
-        now: new Date(),
-        maxFutureSkewMs: 10 * 60_000,
-      },
-    );
-    expect(verification.ok).toBe(true);
-  });
+      expect(verification.ok).toBe(true);
+    },
+    25_000,
+  );
 });

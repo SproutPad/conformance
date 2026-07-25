@@ -2,49 +2,170 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sproutpad.ai/spec/envelope.schema.json",
   "title": "Governed Agent Spend — response envelope",
-  "description": "Machine-checkable definition of the normative wire format in spec §3 (https://sproutpad.ai/spec.md). A response body is conformant iff it validates against exactly one of the two branches: a success envelope or an error envelope. Field names are normative — no renaming, no restyling.",
+  "description": "Machine-checkable definition of the normative wire format in spec §3 (https://sproutpad.ai/spec.md). formatVersion 2 uses typed actions. Field names are normative — no renaming, no restyling.",
   "oneOf": [
     { "$ref": "#/$defs/successEnvelope" },
     { "$ref": "#/$defs/errorEnvelope" }
   ],
   "$defs": {
+    "formatVersion": {
+      "description": "Wire dialect version. 2 is the agent typed-actions dialect.",
+      "const": 2
+    },
+    "agentAction": {
+      "description": "Typed continuation (§3.1). Agents execute these; they MUST NOT parse prose nextActions.",
+      "oneOf": [
+        { "$ref": "#/$defs/agentToolAction" },
+        { "$ref": "#/$defs/agentUrlAction" },
+        { "$ref": "#/$defs/agentStopAction" },
+        { "$ref": "#/$defs/agentManualAction" }
+      ]
+    },
+    "agentToolAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "tool", "arguments"],
+      "properties": {
+        "kind": { "const": "tool" },
+        "tool": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_.-]+$"
+        },
+        "arguments": { "type": "object" },
+        "requiredArguments": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "maxItems": 50
+        },
+        "requiredOneOf": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 2,
+            "maxItems": 10
+          },
+          "maxItems": 20
+        },
+        "afterMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400000
+        },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 500 }
+      }
+    },
+    "agentUrlAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "url", "purpose", "requiresHuman"],
+      "properties": {
+        "kind": { "const": "url" },
+        "url": { "type": "string", "format": "uri" },
+        "purpose": {
+          "type": "string",
+          "enum": ["authenticate", "approve", "billing", "review", "docs"]
+        },
+        "requiresHuman": { "const": true }
+      }
+    },
+    "agentStopAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "reason"],
+      "properties": {
+        "kind": { "const": "stop" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 500 }
+      }
+    },
+    "agentManualAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "purpose", "instruction", "requiresHuman"],
+      "properties": {
+        "kind": { "const": "manual" },
+        "purpose": {
+          "type": "string",
+          "enum": ["dns_configuration", "external_configuration"]
+        },
+        "instruction": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "details": { "type": "object" },
+        "requiresHuman": { "const": true }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "description": "Ordered typed continuations. Empty arrays are invalid when a contract requires a continuation.",
+      "items": { "$ref": "#/$defs/agentAction" },
+      "maxItems": 50
+    },
+    "actionableActions": {
+      "description": "A non-empty typed continuation list.",
+      "allOf": [{ "$ref": "#/$defs/actions" }],
+      "minItems": 1
+    },
     "successEnvelope": {
       "type": "object",
-      "description": "Success. Read-only responses carry any shape under `data`; responses whose operation contract promises a continuation must additionally satisfy #/$defs/actionableSuccessEnvelope, and successful public MUTATION operations must satisfy #/$defs/mutatingSuccessEnvelope (§3.1). Whether an operation is mutating is not inferable from the body alone, so graders apply the operation-specific definition to responses of known operations.",
+      "description": "Success. Read-only responses carry any shape under `data`; operations that promise a continuation MUST include typed `actions` either at the top level or inside `data` (operation contract decides). Public mutations MUST satisfy #/$defs/mutatingSuccessEnvelope (§3.1).",
       "required": ["data"],
       "properties": {
         "data": { "type": "object" },
-        "nextActions": { "$ref": "#/$defs/nextActions" },
+        "actions": { "$ref": "#/$defs/actions" },
+        "formatVersion": { "$ref": "#/$defs/formatVersion" },
         "replayed": {
           "type": "boolean",
           "description": "Transport metadata. True only when an Idempotency-Key replay returned the stored response without re-executing the mutation."
         }
       },
-      "not": { "required": ["blockedBy"] }
+      "not": {
+        "anyOf": [
+          { "required": ["blockedBy"] },
+          { "required": ["nextActions"] },
+          { "required": ["resolution"] }
+        ]
+      }
     },
     "actionableSuccessEnvelope": {
-      "description": "A successful operation that is contractually required to teach the next step. Fake-money sandbox control-protocol transitions use this definition because they cannot mutate a provider, customer resource, or real payment instrument; a §3.1 public mutation must instead satisfy mutatingSuccessEnvelope.",
+      "description": "A successful operation that is contractually required to teach the next step via typed actions. Fake-money sandbox transitions use data.actions; agent REST/MCP use the operation's published location for actions.",
       "allOf": [
         { "$ref": "#/$defs/successEnvelope" },
         {
           "type": "object",
-          "required": ["nextActions"],
-          "properties": {
-            "nextActions": { "$ref": "#/$defs/actionableNextActions" }
-          }
+          "anyOf": [
+            {
+              "required": ["actions"],
+              "properties": {
+                "actions": { "$ref": "#/$defs/actionableActions" }
+              }
+            },
+            {
+              "properties": {
+                "data": {
+                  "type": "object",
+                  "required": ["actions"],
+                  "properties": {
+                    "actions": { "$ref": "#/$defs/actionableActions" }
+                  }
+                }
+              }
+            }
+          ]
         }
       ]
     },
     "mutatingSuccessEnvelope": {
-      "description": "The complete §3.1 envelope for every successful public mutation: governance evidence inside data and a non-empty nextActions array at the top level.",
+      "description": "The complete §3.1 envelope for every successful public mutation: governance evidence inside data and typed actions (never prose nextActions).",
       "allOf": [
         { "$ref": "#/$defs/actionableSuccessEnvelope" },
         {
           "type": "object",
-          "required": ["data", "nextActions"],
+          "required": ["data"],
           "properties": {
             "data": { "$ref": "#/$defs/mutatingSuccessData" },
-            "nextActions": { "$ref": "#/$defs/actionableNextActions" },
+            "actions": { "$ref": "#/$defs/actions" },
+            "formatVersion": { "$ref": "#/$defs/formatVersion" },
             "replayed": { "type": "boolean" }
           },
           "additionalProperties": false
@@ -53,15 +174,19 @@
     },
     "mutatingSuccessData": {
       "type": "object",
-      "description": "The §3.1 contract for the `data` object of a successful public mutation: receipt, undo, and budgetRemainingUsd. nextActions belongs only at the top level of the envelope.",
-      "required": ["receipt", "undo", "budgetRemainingUsd"],
+      "description": "The §3.1 contract for the `data` object of a successful public mutation: receipt and undo are required. budgetRemainingUsd SHOULD appear on data or inside the operation payload; typed actions may appear here or at the envelope top level.",
+      "required": ["receipt", "undo"],
       "properties": {
         "receipt": { "$ref": "#/$defs/receipt" },
         "undo": { "$ref": "#/$defs/undo" },
-        "budgetRemainingUsd": { "type": "number", "minimum": 0 }
+        "budgetRemainingUsd": { "type": "number", "minimum": 0 },
+        "actions": { "$ref": "#/$defs/actions" }
       },
       "not": {
-        "anyOf": [{ "required": ["nextActions"] }, { "required": ["replayed"] }]
+        "anyOf": [
+          { "required": ["nextActions"] },
+          { "required": ["replayed"] }
+        ]
       }
     },
     "receipt": {
@@ -107,25 +232,48 @@
         }
       ]
     },
-    "nextActions": {
-      "type": "array",
-      "description": "Ordered sensible next calls (§3.1). Array order is execution order. When authority changes or a precondition is required, the instruction names the actor and the required endpoint, header, or ordering constraint; clients must not infer omitted authority.",
-      "items": { "type": "string", "minLength": 1 }
-    },
-    "actionableNextActions": {
-      "description": "A non-empty continuation list required by actionableSuccessEnvelope.",
-      "allOf": [{ "$ref": "#/$defs/nextActions" }],
-      "minItems": 1
-    },
     "errorEnvelope": {
       "type": "object",
-      "description": "Error (§3.2). blockedBy names the specific gate in a namespaced vocabulary. resolution, when present, is the machine-readable legitimate path forward; when absent, no legitimate path exists.",
-      "required": ["blockedBy"],
+      "description": "Agent-facing error (§3.2). Always carries blockedBy, message, retryable, and typed actions. Generic resolution belongs only on human/dashboard surfaces and MUST NOT appear on agent REST/MCP.",
+      "required": ["blockedBy", "message", "retryable", "actions"],
       "properties": {
         "blockedBy": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9]*:[a-z0-9_.]+$",
-          "description": "Namespaced gate identifier, e.g. policy:max_domain_price, budget:exceeded, input:invalid_domain. Values (not field names) use lower snake_case."
+          "description": "Namespaced gate identifier, e.g. policy:max_domain_price, budget:exceeded, input:invalid_domain."
+        },
+        "message": { "type": "string", "minLength": 1 },
+        "retryable": { "type": "boolean" },
+        "actions": { "$ref": "#/$defs/actionableActions" },
+        "code": {
+          "type": "string",
+          "description": "When present, MUST equal blockedBy."
+        },
+        "limit": { "type": "number" },
+        "requested": { "type": "number" },
+        "formatVersion": { "$ref": "#/$defs/formatVersion" }
+      },
+      "not": { "required": ["resolution"] },
+      "allOf": [
+        {
+          "if": { "required": ["code"] },
+          "then": {
+            "properties": {
+              "code": { "type": "string" },
+              "blockedBy": { "type": "string" }
+            }
+          }
+        }
+      ]
+    },
+    "humanErrorEnvelope": {
+      "type": "object",
+      "description": "Human-only error surface (dashboard/approvals/admin). MAY carry resolution. Agents MUST NOT depend on this shape.",
+      "required": ["blockedBy"],
+      "properties": {
+        "blockedBy": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*:[a-z0-9_.]+$"
         },
         "message": { "type": "string" },
         "limit": { "type": "number" },
@@ -136,13 +284,12 @@
     },
     "resolution": {
       "type": "object",
-      "description": "The legitimate path forward. `type` names the path; the remaining fields carry the artifact needed to walk it (a task id to poll, a URL to hand to the human, a hint for a retry).",
+      "description": "Human-only legitimate path forward. Not part of the agent wire dialect.",
       "required": ["type"],
       "properties": {
         "type": {
           "type": "string",
-          "pattern": "^[a-z][a-z0-9_]*$",
-          "description": "e.g. human_approval, retry, signup, authenticate, update_billing, upgrade, unfreeze, human_action, human_dashboard"
+          "pattern": "^[a-z][a-z0-9_]*$"
         },
         "taskId": { "type": "string" },
         "hint": { "type": "string" },

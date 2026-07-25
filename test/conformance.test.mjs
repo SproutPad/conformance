@@ -16,6 +16,16 @@ function response(body, status = 400) {
   });
 }
 
+function agentError(blockedBy, message, extras = {}) {
+  return {
+    blockedBy,
+    message,
+    retryable: false,
+    actions: [{ kind: "stop", reason: message }],
+    ...extras,
+  };
+}
+
 function conformingFetch(requests) {
   return async (input) => {
     const url = new URL(String(input));
@@ -25,56 +35,73 @@ function conformingFetch(requests) {
       url.searchParams.has("query")
     ) {
       return response(
-        { data: { results: [] }, nextActions: ["estimate"] },
+        {
+          data: {
+            results: [],
+            truncated: false,
+            actions: [
+              {
+                kind: "tool",
+                tool: "estimate",
+                arguments: {},
+                requiredArguments: ["domain"],
+                reason: "Price one concrete domain before quoting",
+              },
+            ],
+          },
+        },
         200,
       );
     }
     if (url.pathname === "/v1/domains/search") {
-      return response({
-        blockedBy: "input:missing_query",
-        message: "query is required",
-        resolution: { type: "retry", hint: "pass ?query=<domain>" },
-      });
+      return response(agentError("input:missing_query", "query is required"));
     }
     if (url.pathname === "/v1/estimate") {
-      return response({
-        blockedBy: "input:invalid_domain",
-        message: "invalid domain",
-        resolution: { type: "retry", hint: "fix the domain" },
-      });
+      return response(agentError("input:invalid_domain", "invalid domain"));
     }
     if (url.pathname === "/v1/ap2/verify") {
-      return response({
-        blockedBy: "input:invalid",
-        message: "mandate tokens are required",
-        resolution: { type: "retry", hint: "supply every token" },
-      });
+      return response(
+        agentError("input:invalid", "mandate tokens are required"),
+      );
     }
     if (url.pathname === "/v1/projects/prj_none/status") {
       return response(
-        {
-          blockedBy: "auth:not_your_project",
-          message: "Project not found",
-          resolution: { type: "retry", hint: "check the project id" },
-        },
-        404,
+        agentError("auth:required", "Authenticate with an agent key first"),
+        401,
       );
     }
     if (url.pathname.startsWith("/v1/approvals/")) {
       return response(
         {
-          blockedBy: "auth:required",
-          message: "A signed-in human must decide",
-          resolution: { type: "human_action", path: "/app" },
+          ...agentError("auth:required", "sign in to the dashboard to do this"),
+          resolution: {
+            type: "human_action",
+            hint: "only your human can do this — they decide from their dashboard session or the emailed approval link; no agent credential can ever succeed here (spec §6.2)",
+            url: "https://api.sproutpad.ai/app",
+          },
+          actions: [
+            {
+              kind: "url",
+              url: "https://api.sproutpad.ai/docs",
+              purpose: "authenticate",
+              requiresHuman: true,
+            },
+          ],
         },
         401,
       );
     }
     return response(
       {
-        blockedBy: "auth:required",
-        message: "Authentication is required",
-        resolution: { type: "authenticate", path: "/docs" },
+        ...agentError("auth:required", "Authentication is required"),
+        actions: [
+          {
+            kind: "url",
+            url: "https://api.sproutpad.ai/docs",
+            purpose: "authenticate",
+            requiresHuman: true,
+          },
+        ],
       },
       401,
     );
@@ -98,7 +125,7 @@ describe("standalone conformance package", () => {
     expect(requests.some((url) => url.pathname.includes("/spec/"))).toBe(false);
   });
 
-  it("accepts the opaque non-owned-project response for a forged bearer", async () => {
+  it("treats a forged bearer as anonymous auth:required (no key-existence oracle)", async () => {
     const result = await runEnvelopeConformance({
       baseUrl: "https://implementation.example",
       fetchImpl: conformingFetch([]),
@@ -109,7 +136,7 @@ describe("standalone conformance package", () => {
       result.probes.find((probe) => probe.id === "error.bad_credential"),
     ).toMatchObject({
       status: "pass",
-      httpStatus: 404,
+      httpStatus: 401,
     });
   });
 
@@ -129,11 +156,11 @@ describe("standalone conformance package", () => {
     expect(result.schema.sha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it("fails the grade when a resolvable error omits its next step", async () => {
+  it("fails the grade when an agent error omits typed actions", async () => {
     const result = await runEnvelopeConformance({
       baseUrl: "https://implementation.example",
       fetchImpl: async () =>
-        response({ blockedBy: "auth:required", message: "No resolution" }),
+        response({ blockedBy: "auth:required", message: "No actions" }),
     });
     expect(result.conformant).toBe(false);
     expect(result.probes.every((probe) => probe.status === "fail")).toBe(true);
@@ -149,16 +176,26 @@ describe("standalone conformance package", () => {
           url.searchParams.has("query")
         ) {
           return response(
-            { data: { results: [] }, nextActions: ["estimate"] },
+            {
+              data: {
+                results: [],
+                truncated: false,
+                actions: [
+                  {
+                    kind: "tool",
+                    tool: "estimate",
+                    arguments: {},
+                    requiredArguments: ["domain"],
+                    reason: "Price one concrete domain before quoting",
+                  },
+                ],
+              },
+            },
             200,
           );
         }
         return response(
-          {
-            blockedBy: "auth:required",
-            message: "Authentication is required",
-            resolution: { type: "authenticate", path: "/docs" },
-          },
+          agentError("auth:required", "Authentication is required"),
           200,
         );
       },
@@ -178,11 +215,7 @@ describe("standalone conformance package", () => {
       baseUrl: "https://implementation.example",
       fetchImpl: async () =>
         response(
-          {
-            blockedBy: "auth:required",
-            message: "Authentication is required",
-            resolution: { type: "authenticate", path: "/docs" },
-          },
+          agentError("auth:required", "Authentication is required"),
           401,
         ),
     });
@@ -192,7 +225,6 @@ describe("standalone conformance package", () => {
       "error.input_invalid_domain",
       "error.input_missing_query",
       "error.ap2_verify_invalid_input",
-      "error.approvals_agent_credential",
       "success.domain_search",
     ]) {
       expect(
@@ -210,6 +242,7 @@ describe("standalone conformance package", () => {
     );
     expect(CHECKER_VERSION).toBe(packageJson.version);
     expect(packageJson.license).toBe("MIT AND CC-BY-4.0");
+    expect(packageJson.version).toBe("0.2.0");
   });
 
   it("parses an explicit target and machine-readable output options", () => {
@@ -252,7 +285,7 @@ describe("standalone conformance package", () => {
     const rendered = renderMarkdown({
       ranAt: "2026-07-16T00:00:00.000Z",
       baseUrl: "https://implementation.example",
-      checkerVersion: "0.1.1",
+      checkerVersion: "0.2.0",
       profile: "wire",
       schema: { sha256: "a".repeat(64) },
       suites: [
