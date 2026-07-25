@@ -222,6 +222,7 @@ function anonymousTarget({
   omitGovernedField,
   openApiDocument,
   flatOnlyTaskAdmission = false,
+  flatOnlyQuoteVerdict = false,
 } = {}) {
   const requests = [];
   let serviceLive = false;
@@ -363,18 +364,45 @@ function anonymousTarget({
     }
     if (url.pathname === "/v1/quotes") {
       if (headers.has("authorization")) {
+        const quoteData = flatOnlyQuoteVerdict
+          ? { verdict: "ALLOW" }
+          : {
+              quote: {
+                projectId: "prj_dedicated",
+                domain: "eval.scratch.example.com",
+                target: "cloudflare",
+                service: "evalweb",
+                oneTimeUsd: 0,
+                monthlyUsd: 0,
+                domainOneTimeUsd: 0,
+                computeMonthlyUsd: 0,
+                budgetRemainingUsd: 25,
+                verdict: "ALLOW",
+                reservation: {
+                  reservationId: "rsv_conformance",
+                  expiresAt: "2099-01-01T00:00:00.000Z",
+                },
+              },
+            };
         return json(
           mutatingEnvelope(
             "quote",
-            { verdict: "ALLOW" },
-            "reserve_quote_budget",
+            quoteData,
+            "quote_budget_reserved",
             [
               {
                 kind: "tool",
                 tool: "launch_service",
-                arguments: {},
-                requiredArguments: ["domain", "target", "service"],
-                reason: "Launch after an ALLOW quote",
+                arguments: {
+                  projectId: "prj_dedicated",
+                  domain: "eval.scratch.example.com",
+                  target: "cloudflare",
+                  service: "evalweb",
+                  reservationId: "rsv_conformance",
+                },
+                requiredArguments: ["bundleId", "justification"],
+                reason:
+                  "Stage a static asset bundle and supply the audited justification before launching.",
               },
             ],
           ),
@@ -1058,6 +1086,28 @@ describe("public discovery and governed evaluator", () => {
     ).toMatchObject({
       status: "fail",
       error: expect.stringContaining("without nested data.task.taskId"),
+    });
+  });
+
+  it("fails flat-only quote decision that omits nested data.quote", async () => {
+    const target = anonymousTarget({
+      governed: true,
+      flatOnlyQuoteVerdict: true,
+    });
+    const result = await runPublicEvals({
+      baseUrl: BASE_URL,
+      fetchImpl: target.fetchImpl,
+      agentKey: "agk_dedicated.secret",
+      projectId: "prj_dedicated",
+      scratchDomainSuffix: "scratch.example.com",
+      includeMcpContract: false,
+      pollIntervalMs: 1,
+    });
+    expect(
+      result.scenarios.find((scenario) => scenario.id === "loop.quote"),
+    ).toMatchObject({
+      status: "fail",
+      error: expect.stringContaining("without nested data.quote"),
     });
   });
 
