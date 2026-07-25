@@ -2,11 +2,202 @@ import { describe, expect, it } from "vitest";
 import {
   DISCOVERY_PROBE_IDS_V1,
   GOVERNED_PROBE_IDS,
+  MCP_CONFORMANCE_PROTOCOL_VERSION,
   runPublicEvals,
 } from "../lib/public-evals.mjs";
 import { validMutationOpenApi } from "./fixtures/openapi.mjs";
 
 const BASE_URL = "https://implementation.example";
+
+const annotations = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
+function catalogTool(name) {
+  return {
+    operationId: name,
+    title: `Title for ${name}`,
+    description: `Description for ${name}`,
+    authorization: { auth: "anonymous", scopes: [], humanOnly: false },
+    behavior: {
+      effect: "read",
+      openWorld: false,
+      destructive: false,
+      idempotency: "none",
+      taskMode: "none",
+    },
+    schemas: {
+      input: { state: "complete", schemaId: `sproutpad.${name}.input.v2` },
+      output: { state: "none" },
+    },
+    lifecycle: { status: "active" },
+    bindings: {
+      mcp: {
+        toolName: name,
+        annotations,
+      },
+    },
+  };
+}
+
+function mcpCatalogTarget({
+  manifestToolCatalogOnly = false,
+  deprecatedCatalogTool = false,
+} = {}) {
+  const tools = [catalogTool("estimate"), catalogTool("help")];
+  if (deprecatedCatalogTool) {
+    tools[0] = { ...tools[0], lifecycle: { status: "deprecated" } };
+  }
+  const fetchImpl = async (input, init = {}) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/llms.txt") return text("# SproutPad");
+    if (url.pathname === "/.well-known/mcp.json") {
+      return json(
+        manifestToolCatalogOnly
+          ? {
+              url: `${BASE_URL}/mcp`,
+              toolCatalog: `${BASE_URL}/.well-known/mcp-tools.json`,
+              toolCount: tools.length,
+            }
+          : {
+              url: `${BASE_URL}/mcp`,
+              mcpDiscovery: `${BASE_URL}/.well-known/mcp-tools.json`,
+              toolCount: tools.length,
+            },
+      );
+    }
+    if (url.pathname === "/.well-known/mcp-tools.json") {
+      return json({
+        name: "sproutpad",
+        mcp: `${BASE_URL}/mcp`,
+        docs: `${BASE_URL}/agents.md`,
+        formatVersion: "2",
+        contractDigest: "test-contract-digest",
+        coverage: { complete: true, mcpOperationCount: tools.length },
+        tools,
+      });
+    }
+    if (url.pathname === "/mcp") {
+      const rpc = JSON.parse(String(init.body));
+      if (rpc.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      if (rpc.method === "initialize") {
+        return json({
+          jsonrpc: "2.0",
+          id: rpc.id,
+          result: {
+            protocolVersion: MCP_CONFORMANCE_PROTOCOL_VERSION,
+            capabilities: { tools: {} },
+            serverInfo: { name: "sproutpad", version: "build-test" },
+          },
+        });
+      }
+      if (rpc.method === "tools/list") {
+        return json({
+          jsonrpc: "2.0",
+          id: rpc.id,
+          result: {
+            tools: tools.map((tool) => ({
+              name: tool.bindings.mcp.toolName,
+              title: tool.title,
+              description: tool.description,
+              annotations: tool.bindings.mcp.annotations,
+              inputSchema: { type: "object" },
+            })),
+          },
+        });
+      }
+      if (rpc.method === "tools/call") {
+        return json({
+          jsonrpc: "2.0",
+          id: rpc.id,
+          result: {
+            isError: false,
+            structuredContent: {
+              ok: true,
+              kind: "index",
+              topic: "quickstart",
+              actions: [
+                {
+                  kind: "tool",
+                  tool: "estimate",
+                  arguments: {},
+                  reason: "Continue",
+                },
+              ],
+            },
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  ok: true,
+                  kind: "index",
+                  topic: "quickstart",
+                  actions: [
+                    {
+                      kind: "tool",
+                      tool: "estimate",
+                      arguments: {},
+                      reason: "Continue",
+                    },
+                  ],
+                }),
+              },
+            ],
+          },
+        });
+      }
+      throw new Error(`unexpected MCP request ${rpc.method}`);
+    }
+    if (url.pathname === "/openapi.json") return json(validMutationOpenApi());
+    if (url.pathname === "/agents.md") return text("# agents guide");
+    if (url.pathname === "/spec.md") return text("# Governed Agent Spend");
+    if (url.pathname === "/transparency") {
+      return json({ data: { governance: {} } });
+    }
+    if (url.pathname === "/v1/domains/search") {
+      return json({
+        data: {
+          results: [],
+          truncated: false,
+          actions: [
+            {
+              kind: "tool",
+              tool: "estimate",
+              arguments: {},
+              requiredArguments: ["domain"],
+              reason: "Price one concrete domain before quoting",
+            },
+          ],
+        },
+      });
+    }
+    if (url.pathname === "/v1/quotes") {
+      return json(
+        {
+          blockedBy: "auth:required",
+          message: "Authentication is required",
+          retryable: false,
+          actions: [
+            {
+              kind: "url",
+              url: "https://api.sproutpad.ai/docs",
+              purpose: "authenticate",
+              requiresHuman: true,
+            },
+          ],
+        },
+        401,
+      );
+    }
+    throw new Error(`unexpected request ${url.pathname}`);
+  };
+  return { fetchImpl };
+}
 
 function json(value, status = 200) {
   return new Response(JSON.stringify(value), {
@@ -752,5 +943,38 @@ describe("public discovery and governed evaluator", () => {
           request.init.method === "POST",
       ),
     ).toHaveLength(1);
+  });
+
+  it("fails an otherwise-valid v2 catalog linked only through toolCatalog", async () => {
+    const target = mcpCatalogTarget({ manifestToolCatalogOnly: true });
+    const result = await runPublicEvals({
+      baseUrl: BASE_URL,
+      fetchImpl: target.fetchImpl,
+    });
+    expect(
+      result.scenarios.find(
+        (scenario) => scenario.id === "discovery.mcp_tool_catalog",
+      ),
+    ).toMatchObject({
+      status: "fail",
+      error:
+        "MCP manifest did not link the canonical tool catalog via mcpDiscovery",
+    });
+  });
+
+  it("fails a v2 catalog tool that still uses deprecated lifecycle", async () => {
+    const target = mcpCatalogTarget({ deprecatedCatalogTool: true });
+    const result = await runPublicEvals({
+      baseUrl: BASE_URL,
+      fetchImpl: target.fetchImpl,
+    });
+    expect(
+      result.scenarios.find(
+        (scenario) => scenario.id === "discovery.mcp_tool_catalog",
+      ),
+    ).toMatchObject({
+      status: "fail",
+      error: "estimate: catalog lifecycle was invalid",
+    });
   });
 });
