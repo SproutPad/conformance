@@ -103,6 +103,12 @@ jobs:
           # fail the PUT with a misleading 404/ENEEDAUTH.
       - name: Upgrade npm for trusted-publisher OIDC
         run: npm install -g npm@latest --force
+      - name: Require GitHub OIDC request capability
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
       - name: Publish verified artifact with npm trusted publishing
         env:
           ARCHIVE: ${{ steps.package.outputs.archive }}
@@ -110,4 +116,8 @@ jobs:
         run: |
           set -euo pipefail
           npm --version
-          npm publish "./$ARCHIVE" --access public --provenance --ignore-scripts
+          npm publish "./$ARCHIVE" \
+            --access public \
+            --provenance \
+            --ignore-scripts \
+            --loglevel verbose
