@@ -109,6 +109,40 @@ jobs:
           set -euo pipefail
           test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
           test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+      - name: Report non-secret trusted-publisher identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const url = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL);
+          url.searchParams.set("audience", "npm:registry.npmjs.org");
+          const response = await fetch(url, {
+            headers: {
+              authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}`,
+            },
+          });
+          if (!response.ok) {
+            throw new Error(`OIDC identity request failed: ${response.status}`);
+          }
+          const { value } = await response.json();
+          const payload = JSON.parse(
+            Buffer.from(value.split(".")[1], "base64url").toString("utf8"),
+          );
+          const identity = Object.fromEntries(
+            [
+              "aud",
+              "sub",
+              "repository",
+              "workflow_ref",
+              "job_workflow_ref",
+              "ref",
+              "environment",
+            ]
+              .filter((key) => payload[key] !== undefined)
+              .map((key) => [key, payload[key]]),
+          );
+          console.log(JSON.stringify(identity, null, 2));
+          NODE
       - name: Publish verified artifact with npm trusted publishing
         env:
           ARCHIVE: ${{ steps.package.outputs.archive }}
