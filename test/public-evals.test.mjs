@@ -37,6 +37,7 @@ function catalogTool(name) {
     bindings: {
       mcp: {
         toolName: name,
+        description: `[read] Description for ${name}`,
         annotations,
       },
     },
@@ -104,7 +105,7 @@ function mcpCatalogTarget({
             tools: tools.map((tool) => ({
               name: tool.bindings.mcp.toolName,
               title: tool.title,
-              description: tool.description,
+              description: tool.bindings.mcp.description,
               annotations: tool.bindings.mcp.annotations,
               inputSchema: { type: "object" },
             })),
@@ -223,6 +224,7 @@ function anonymousTarget({
   openApiDocument,
   flatOnlyTaskAdmission = false,
   flatOnlyQuoteVerdict = false,
+  statusWithContinuationActions = false,
 } = {}) {
   const requests = [];
   let serviceLive = false;
@@ -527,24 +529,34 @@ function anonymousTarget({
       );
     }
     if (governed && url.pathname === "/v1/projects/prj_dedicated/status") {
+      // Mirror live get_status: inventory read, no continuations.
       const envelope = {
         data: {
-          services: serviceLive ? [{ name: "evalweb", status: "live" }] : [],
-          actions: [
-            {
-              kind: "tool",
-              tool: "get_costs",
-              arguments: { projectId: "prj_dedicated" },
-              reason: "Inspect spend after launch",
-            },
-          ],
+          resources: serviceLive ? 1 : 0,
+          monthlyUsd: serviceLive ? 0 : 0,
+          services: serviceLive
+            ? [
+                {
+                  name: "evalweb",
+                  kind: "site",
+                  label: "evalweb",
+                  attachedDomains: [],
+                  monthlyUsd: 0,
+                  status: "live",
+                },
+              ]
+            : [],
         },
       };
-      if (
-        omitGovernedField?.stage === "status" &&
-        omitGovernedField.field === "actions"
-      ) {
-        delete envelope.data.actions;
+      if (statusWithContinuationActions) {
+        envelope.data.actions = [
+          {
+            kind: "tool",
+            tool: "get_costs",
+            arguments: { projectId: "prj_dedicated" },
+            reason: "stale continuation on direct status",
+          },
+        ];
       }
       return json(envelope);
     }
@@ -748,7 +760,6 @@ describe("public discovery and governed evaluator", () => {
     ["quote", "receipt", "loop.quote"],
     ["launch", "undo", "loop.launch"],
     ["launch", "actions", "loop.launch"],
-    ["status", "actions", "loop.status_live"],
   ])(
     "fails %s when the governed response omits %s",
     async (stage, field, expectedProbe) => {
@@ -1108,6 +1119,28 @@ describe("public discovery and governed evaluator", () => {
     ).toMatchObject({
       status: "fail",
       error: expect.stringContaining("without nested data.quote"),
+    });
+  });
+
+  it("fails status that still carries continuation actions", async () => {
+    const target = anonymousTarget({
+      governed: true,
+      statusWithContinuationActions: true,
+    });
+    const result = await runPublicEvals({
+      baseUrl: BASE_URL,
+      fetchImpl: target.fetchImpl,
+      agentKey: "agk_dedicated.secret",
+      projectId: "prj_dedicated",
+      scratchDomainSuffix: "scratch.example.com",
+      includeMcpContract: false,
+      pollIntervalMs: 1,
+    });
+    expect(
+      result.scenarios.find((scenario) => scenario.id === "loop.status_live"),
+    ).toMatchObject({
+      status: "fail",
+      error: expect.stringContaining("inventoryReadSuccessEnvelope"),
     });
   });
 
