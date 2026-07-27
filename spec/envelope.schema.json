@@ -36,14 +36,14 @@
         "arguments": { "type": "object" },
         "requiredArguments": {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 },
+          "items": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_.-]+$" },
           "maxItems": 50
         },
         "requiredOneOf": {
           "type": "array",
           "items": {
             "type": "array",
-            "items": { "type": "string", "minLength": 1 },
+            "items": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_.-]+$" },
             "minItems": 2,
             "maxItems": 10
           },
@@ -54,7 +54,7 @@
           "minimum": 0,
           "maximum": 86400000
         },
-        "reason": { "type": "string", "minLength": 1, "maxLength": 500 }
+        "reason": { "type": "string", "minLength": 1, "maxLength": 500, "pattern": "\\S" }
       }
     },
     "agentUrlAction": {
@@ -77,7 +77,7 @@
       "required": ["kind", "reason"],
       "properties": {
         "kind": { "const": "stop" },
-        "reason": { "type": "string", "minLength": 1, "maxLength": 500 }
+        "reason": { "type": "string", "minLength": 1, "maxLength": 500, "pattern": "\\S" }
       }
     },
     "agentManualAction": {
@@ -90,7 +90,7 @@
           "type": "string",
           "enum": ["dns_configuration", "external_configuration"]
         },
-        "instruction": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "instruction": { "type": "string", "minLength": 1, "maxLength": 500, "pattern": "\\S" },
         "details": { "type": "object" },
         "requiresHuman": { "const": true }
       }
@@ -126,6 +126,22 @@
           { "required": ["resolution"] }
         ]
       }
+    },
+    "inventoryReadSuccessEnvelope": {
+      "description": "Success for inventory-style reads that MUST NOT teach a typed continuation (neither top-level `actions` nor `data.actions`). Binding: GET /v1/projects/{id}/status. See /spec.md §3.3. Not the product's 'direct API vs code-mode' meaning of direct-only — inventory read, no continuations.",
+      "allOf": [
+        { "$ref": "#/$defs/successEnvelope" },
+        {
+          "type": "object",
+          "not": { "required": ["actions"] },
+          "properties": {
+            "data": {
+              "type": "object",
+              "not": { "required": ["actions"] }
+            }
+          }
+        }
+      ]
     },
     "actionableSuccessEnvelope": {
       "description": "A successful operation that is contractually required to teach the next step via typed actions. Fake-money sandbox transitions use data.actions; agent REST/MCP use the operation's published location for actions.",
@@ -239,32 +255,34 @@
       "properties": {
         "blockedBy": {
           "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
           "pattern": "^[a-z][a-z0-9]*:[a-z0-9_.]+$",
           "description": "Namespaced gate identifier, e.g. policy:max_domain_price, budget:exceeded, input:invalid_domain."
         },
-        "message": { "type": "string", "minLength": 1 },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000,
+          "pattern": "\\S",
+          "description": "The implementation trims before applying minLength, so a whitespace-only message is rejected. The pattern makes that expressible here."
+        },
         "retryable": { "type": "boolean" },
         "actions": { "$ref": "#/$defs/actionableActions" },
         "code": {
           "type": "string",
-          "description": "When present, MUST equal blockedBy."
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9]*:[a-z0-9_.]+$",
+          "description": "When present, MUST equal blockedBy. JSON Schema cannot require equality between two sibling properties, so that invariant is enforced by the implementation and pinned by its drift test; this declaration bounds the value to the same grammar as blockedBy."
         },
         "limit": { "type": "number" },
         "requested": { "type": "number" },
+        "currentVersion": { "type": "number" },
         "formatVersion": { "$ref": "#/$defs/formatVersion" }
       },
-      "not": { "required": ["resolution"] },
-      "allOf": [
-        {
-          "if": { "required": ["code"] },
-          "then": {
-            "properties": {
-              "code": { "type": "string" },
-              "blockedBy": { "type": "string" }
-            }
-          }
-        }
-      ]
+      "additionalProperties": false,
+      "not": { "required": ["resolution"] }
     },
     "humanErrorEnvelope": {
       "type": "object",
