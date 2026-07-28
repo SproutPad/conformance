@@ -1,6 +1,6 @@
 {
   "name": "@sproutpad/conformance",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Independent wire, discovery, and governed-loop checker for governed agent-spend APIs",
   "type": "module",
   "license": "MIT AND CC-BY-4.0",

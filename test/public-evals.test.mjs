@@ -3,6 +3,7 @@ import {
   DISCOVERY_PROBE_IDS_V1,
   GOVERNED_PROBE_IDS,
   MCP_CONFORMANCE_PROTOCOL_VERSION,
+  MCP_TOOL_CATALOG_FORMAT_VERSION,
   runPublicEvals,
 } from "../lib/public-evals.mjs";
 import { validMutationOpenApi } from "./fixtures/openapi.mjs";
@@ -75,7 +76,7 @@ function mcpCatalogTarget({
         name: "sproutpad",
         mcp: `${BASE_URL}/mcp`,
         docs: `${BASE_URL}/agents.md`,
-        formatVersion: "2",
+        formatVersion: MCP_TOOL_CATALOG_FORMAT_VERSION,
         contractDigest: "test-contract-digest",
         coverage: { complete: true, mcpOperationCount: tools.length },
         tools,
