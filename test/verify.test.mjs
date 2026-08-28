@@ -44,7 +44,9 @@ async function signCanonicalReport(report, privateKey, kid) {
     typ: "sproutpad-conformance-run+jws",
   };
   const headerPart = b64urlEncodeJson(header);
-  const payloadPart = b64urlEncode(new TextEncoder().encode(canonicalJson(report)));
+  const payloadPart = b64urlEncode(
+    new TextEncoder().encode(canonicalJson(report)),
+  );
   const signingInput = new TextEncoder().encode(`${headerPart}.${payloadPart}`);
   const signature = await crypto.subtle.sign(
     { name: "ECDSA", hash: "SHA-256" },
@@ -80,11 +82,11 @@ function sampleReport(profile = "anonymous") {
     profile,
     runId: `${profile}:verify-test:1`,
     runner: {
-      kind: "github-actions",
+      kind: PUBLIC_CONFORMANCE_TRUST.runnerProvenances[0].kind,
       repository: PUBLIC_CONFORMANCE_TRUST.runnerProvenances[0].repository,
-      workflow: "public-conformance.yml",
+      workflow: "sproutpad-conformance.yml",
       workflowRef: PUBLIC_CONFORMANCE_TRUST.runnerProvenances[0].workflowRef,
-      runUrl: "https://github.com/SproutPad/sproutpad/actions/runs/1",
+      runUrl: "https://buildkite.com/sitemagic/sproutpad-conformance/builds/1",
       commitSha: "a".repeat(40),
       runAttempt: 1,
     },
@@ -124,7 +126,6 @@ describe("verifyConformanceBundle", () => {
     const verification = await verifyConformanceBundle(bundle, jwks, {
       expectedBaseUrl: PUBLIC_CONFORMANCE_TRUST.baseUrl,
       expectedRunnerProvenances: PUBLIC_CONFORMANCE_TRUST.runnerProvenances,
-      expectedRunnerKind: "github-actions",
       now: new Date("2026-07-13T12:01:00.000Z"),
     });
     expect(verification.ok).toBe(true);
@@ -135,6 +136,26 @@ describe("verifyConformanceBundle", () => {
       targetMatches: true,
       provenanceMatches: true,
       timeValid: true,
+    });
+  });
+
+  it("binds runner kind to the exact trusted repository and workflow ref", async () => {
+    const { bundle, jwks, privateKey, kid } = await signedBundle();
+    bundle.report.runner.kind = "github-actions";
+    bundle.digest = canonicalJsonDigest(bundle.report);
+    bundle.signature = await signCanonicalReport(
+      bundle.report,
+      privateKey,
+      kid,
+    );
+
+    await expect(
+      verifyConformanceBundle(bundle, jwks, {
+        expectedRunnerProvenances: PUBLIC_CONFORMANCE_TRUST.runnerProvenances,
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      checks: { provenanceMatches: false },
     });
   });
 
@@ -155,7 +176,6 @@ describe("verifyConformanceBundle", () => {
     const verification = await verifyConformanceBundle(bundle, jwks, {
       expectedBaseUrl: PUBLIC_CONFORMANCE_TRUST.baseUrl,
       expectedRunnerProvenances: PUBLIC_CONFORMANCE_TRUST.runnerProvenances,
-      expectedRunnerKind: "github-actions",
       now: new Date("2026-07-13T12:01:00.000Z"),
     });
 
@@ -181,7 +201,6 @@ describe("verifyConformanceBundle", () => {
       verifyConformanceBundle(bundle, jwks, {
         expectedBaseUrl: PUBLIC_CONFORMANCE_TRUST.baseUrl,
         expectedRunnerProvenances: PUBLIC_CONFORMANCE_TRUST.runnerProvenances,
-        expectedRunnerKind: "github-actions",
         now: new Date("2026-07-13T12:01:00.000Z"),
       }),
     ).resolves.toMatchObject({
@@ -219,7 +238,6 @@ describe("verifyConformanceBundle", () => {
       verifyConformanceBundle(bundle, jwks, {
         expectedBaseUrl: PUBLIC_CONFORMANCE_TRUST.baseUrl,
         expectedRunnerProvenances: PUBLIC_CONFORMANCE_TRUST.runnerProvenances,
-        expectedRunnerKind: "github-actions",
         now: new Date("2026-07-13T12:01:00.000Z"),
       }),
     ).resolves.toMatchObject({
@@ -249,7 +267,6 @@ describe("verifyConformanceBundle", () => {
     await expect(
       verifyConformanceBundle(badDigest, jwks, {
         expectedRunnerProvenances: PUBLIC_CONFORMANCE_TRUST.runnerProvenances,
-        expectedRunnerKind: "github-actions",
         now: new Date("2026-07-13T12:01:00.000Z"),
       }),
     ).resolves.toMatchObject({
@@ -275,7 +292,6 @@ describe("verifyConformanceBundle", () => {
     await expect(
       verifyConformanceBundle(badSignature, jwks, {
         expectedRunnerProvenances: PUBLIC_CONFORMANCE_TRUST.runnerProvenances,
-        expectedRunnerKind: "github-actions",
         now: new Date("2026-07-13T12:01:00.000Z"),
       }),
     ).resolves.toMatchObject({
@@ -291,7 +307,6 @@ describe("verifyConformanceBundle", () => {
     await expect(
       verifyConformanceBundle(reordered, jwks, {
         expectedRunnerProvenances: PUBLIC_CONFORMANCE_TRUST.runnerProvenances,
-        expectedRunnerKind: "github-actions",
         now: new Date("2026-07-13T12:01:00.000Z"),
       }),
     ).resolves.toMatchObject({
@@ -319,56 +334,51 @@ describe("verifyConformanceBundle", () => {
 });
 
 describe("live SproutPad bundle verification", () => {
-  it(
-    "verifies the latest published anonymous bundle when available",
-    async () => {
-      let response;
-      try {
-        response = await fetch(
-          `${PUBLIC_CONFORMANCE_TRUST.baseUrl}/v1/conformance/runs/latest`,
-          { redirect: "error", signal: AbortSignal.timeout(10_000) },
-        );
-      } catch {
-        return;
-      }
-      if (!response.ok) return;
-      const body = await response.json();
-      const run = body?.data?.anonymous?.run;
-      if (!run?.report || !run?.digest || !run?.signature) return;
-      // A cryptographically valid failing/red head is expected while a release
-      // republishes; only require full verifyConformanceBundle success for a
-      // published pass outcome.
-      if (run.outcome !== "pass") return;
-
-      let jwksResponse;
-      try {
-        jwksResponse = await fetch(PUBLIC_CONFORMANCE_TRUST.jwksUrl, {
-          redirect: "error",
-          signal: AbortSignal.timeout(10_000),
-        });
-      } catch {
-        return;
-      }
-      if (!jwksResponse.ok) return;
-      const jwks = JSON.parse(await jwksResponse.text());
-
-      const verification = await verifyConformanceBundle(
-        {
-          report: run.report,
-          digest: run.digest,
-          signature: run.signature,
-        },
-        jwks,
-        {
-          expectedBaseUrl: PUBLIC_CONFORMANCE_TRUST.baseUrl,
-          expectedRunnerProvenances: PUBLIC_CONFORMANCE_TRUST.runnerProvenances,
-          expectedRunnerKind: "github-actions",
-          now: new Date(),
-          maxFutureSkewMs: 10 * 60_000,
-        },
+  it("verifies the latest published anonymous bundle when available", async () => {
+    let response;
+    try {
+      response = await fetch(
+        `${PUBLIC_CONFORMANCE_TRUST.baseUrl}/v1/conformance/runs/latest`,
+        { redirect: "error", signal: AbortSignal.timeout(10_000) },
       );
-      expect(verification.ok).toBe(true);
-    },
-    25_000,
-  );
+    } catch {
+      return;
+    }
+    if (!response.ok) return;
+    const body = await response.json();
+    const run = body?.data?.anonymous?.run;
+    if (!run?.report || !run?.digest || !run?.signature) return;
+    // A cryptographically valid failing/red head is expected while a release
+    // republishes; only require full verifyConformanceBundle success for a
+    // published pass outcome.
+    if (run.outcome !== "pass") return;
+
+    let jwksResponse;
+    try {
+      jwksResponse = await fetch(PUBLIC_CONFORMANCE_TRUST.jwksUrl, {
+        redirect: "error",
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch {
+      return;
+    }
+    if (!jwksResponse.ok) return;
+    const jwks = JSON.parse(await jwksResponse.text());
+
+    const verification = await verifyConformanceBundle(
+      {
+        report: run.report,
+        digest: run.digest,
+        signature: run.signature,
+      },
+      jwks,
+      {
+        expectedBaseUrl: PUBLIC_CONFORMANCE_TRUST.baseUrl,
+        expectedRunnerProvenances: PUBLIC_CONFORMANCE_TRUST.runnerProvenances,
+        now: new Date(),
+        maxFutureSkewMs: 10 * 60_000,
+      },
+    );
+    expect(verification.ok).toBe(true);
+  }, 25_000);
 });

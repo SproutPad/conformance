@@ -15,9 +15,7 @@ import {
 export function isDirectCliInvocation(argv1 = process.argv[1]) {
   if (!argv1) return false;
   try {
-    return (
-      realpathSync(argv1) === realpathSync(fileURLToPath(import.meta.url))
-    );
+    return realpathSync(argv1) === realpathSync(fileURLToPath(import.meta.url));
   } catch {
     return false;
   }
@@ -175,16 +173,17 @@ export async function verifyBundle(bundlePath, jwksPath) {
   const verification = await verifyConformanceBundle(bundle, jwks, {
     expectedBaseUrl: PUBLIC_CONFORMANCE_TRUST.baseUrl,
     expectedRunnerProvenances: PUBLIC_CONFORMANCE_TRUST.runnerProvenances,
-    expectedRunnerKind: "github-actions",
     now: new Date(),
   });
   const report = bundle.report;
   const signature = bundle.signature;
-  const matchedRunnerProvenance = PUBLIC_CONFORMANCE_TRUST.runnerProvenances.find(
-    (provenance) =>
-      report.runner?.repository === provenance.repository &&
-      report.runner?.workflowRef === provenance.workflowRef,
-  );
+  const matchedRunnerProvenance =
+    PUBLIC_CONFORMANCE_TRUST.runnerProvenances.find(
+      (provenance) =>
+        report.runner?.kind === provenance.kind &&
+        report.runner?.repository === provenance.repository &&
+        report.runner?.workflowRef === provenance.workflowRef,
+    );
   return {
     valid: verification.ok,
     checks: verification.checks,
