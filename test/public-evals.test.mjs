@@ -4,6 +4,7 @@ import {
   GOVERNED_PROBE_IDS,
   MCP_CONFORMANCE_PROTOCOL_VERSION,
   MCP_TOOL_CATALOG_FORMAT_VERSION,
+  PUBLIC_MUTATION_OPERATIONS,
   runPublicEvals,
 } from "../lib/public-evals.mjs";
 import { validMutationOpenApi } from "./fixtures/openapi.mjs";
@@ -587,6 +588,16 @@ function anonymousTarget({
 }
 
 describe("public discovery and governed evaluator", () => {
+  it("covers the public deployment lifecycle mutation inventory", () => {
+    expect(PUBLIC_MUTATION_OPERATIONS).toEqual(
+      expect.arrayContaining([
+        ["POST", "/v1/projects/{id}/deployments"],
+        ["POST", "/v1/projects/{id}/deployments/{deploymentId}/promote"],
+        ["POST", "/v1/projects/{id}/deployments/{deploymentId}/rollback"],
+      ]),
+    );
+  });
+
   it("keeps discovery anonymous even when a partial credential is present", async () => {
     const target = anonymousTarget();
     const result = await runPublicEvals({
@@ -662,6 +673,64 @@ describe("public discovery and governed evaluator", () => {
       status: "fail",
       error: expect.stringContaining("nextActions"),
     });
+  });
+
+  it("fails discovery when OpenAPI advertises only a retired subset of descriptor-error fields", async () => {
+    const openApiDocument = validMutationOpenApi();
+    openApiDocument.info = {
+      description:
+        "- Descriptor-bound errors are closed { blockedBy, message } contracts.",
+    };
+    const target = anonymousTarget({ openApiDocument });
+    const result = await runPublicEvals({
+      baseUrl: BASE_URL,
+      fetchImpl: target.fetchImpl,
+      includeMcpContract: false,
+    });
+
+    expect(
+      result.scenarios.find((scenario) => scenario.id === "discovery.openapi"),
+    ).toMatchObject({
+      status: "fail",
+      error: expect.stringContaining(
+        "descriptor-error claim omits required core fields: retryable, actions",
+      ),
+    });
+  });
+
+  it("accepts the complete descriptor-error core in OpenAPI prose", async () => {
+    const openApiDocument = validMutationOpenApi();
+    openApiDocument.info = {
+      description:
+        "- Descriptor-bound errors require { blockedBy, message, retryable, actions }.",
+    };
+    const target = anonymousTarget({ openApiDocument });
+    const result = await runPublicEvals({
+      baseUrl: BASE_URL,
+      fetchImpl: target.fetchImpl,
+      includeMcpContract: false,
+    });
+
+    expect(
+      result.scenarios.find((scenario) => scenario.id === "discovery.openapi"),
+    ).toMatchObject({ status: "pass" });
+  });
+
+  it("accepts descriptor-error prose that does not advertise a field set", async () => {
+    const openApiDocument = validMutationOpenApi();
+    openApiDocument.info = {
+      description: "- Descriptor-bound errors are documented per operation.",
+    };
+    const target = anonymousTarget({ openApiDocument });
+    const result = await runPublicEvals({
+      baseUrl: BASE_URL,
+      fetchImpl: target.fetchImpl,
+      includeMcpContract: false,
+    });
+
+    expect(
+      result.scenarios.find((scenario) => scenario.id === "discovery.openapi"),
+    ).toMatchObject({ status: "pass" });
   });
 
   it("redacts the governed bearer secret from every recorded failure", async () => {
